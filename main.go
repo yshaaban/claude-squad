@@ -18,7 +18,6 @@ import (
 
 var (
 	version     = "0.0.1-prerelease"
-	resetFlag   bool
 	programFlag string
 	autoYesFlag bool
 	daemonFlag  bool
@@ -48,36 +47,6 @@ var (
 			}
 
 			cfg := config.LoadConfig()
-			state := config.LoadState()
-
-			if resetFlag {
-				storage, err := session.NewStorage(state)
-				if err != nil {
-					return fmt.Errorf("failed to initialize storage: %w", err)
-				}
-				if err := storage.DeleteAllInstances(); err != nil {
-					return fmt.Errorf("failed to reset storage: %w", err)
-				}
-				fmt.Println("Storage has been reset successfully")
-
-				if err := tmux.CleanupSessions(); err != nil {
-					return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
-				}
-				fmt.Println("Tmux sessions have been cleaned up")
-
-				if err := git.CleanupWorktrees(); err != nil {
-					return fmt.Errorf("failed to cleanup worktrees: %w", err)
-				}
-				fmt.Println("Worktrees have been cleaned up")
-
-				// Kill any daemon that's running.
-				if err := daemon.StopDaemon(); err != nil {
-					return err
-				}
-				fmt.Println("daemon has been stopped")
-
-				return nil
-			}
 
 			// Program flag overrides config
 			program := cfg.DefaultProgram
@@ -102,6 +71,43 @@ var (
 			}
 
 			return app.Run(ctx, program, autoYes)
+		},
+	}
+
+	resetCmd = &cobra.Command{
+		Use:   "reset",
+		Short: "Reset all stored instances",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			state := config.LoadState()
+			storage, err := session.NewStorage(state)
+			if err != nil {
+				return fmt.Errorf("failed to initialize storage: %w", err)
+			}
+			if err := storage.DeleteAllInstances(); err != nil {
+				return fmt.Errorf("failed to reset storage: %w", err)
+			}
+			fmt.Println("Storage has been reset successfully")
+
+			if err := tmux.CleanupSessions(); err != nil {
+				return fmt.Errorf("failed to cleanup tmux sessions: %w", err)
+			}
+			fmt.Println("Tmux sessions have been cleaned up")
+
+			if err := git.CleanupWorktrees(); err != nil {
+				return fmt.Errorf("failed to cleanup worktrees: %w", err)
+			}
+			fmt.Println("Worktrees have been cleaned up")
+
+			// Kill any daemon that's running.
+			if err := daemon.StopDaemon(); err != nil {
+				return err
+			}
+			fmt.Println("daemon has been stopped")
+
+			return nil
 		},
 	}
 
@@ -134,7 +140,6 @@ var (
 )
 
 func init() {
-	rootCmd.Flags().BoolVar(&resetFlag, "reset", false, "Reset all stored instances")
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,
@@ -150,6 +155,7 @@ func init() {
 
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(resetCmd)
 }
 
 func main() {
