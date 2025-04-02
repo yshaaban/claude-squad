@@ -52,15 +52,15 @@ func (h helpType) ToContent(instance *session.Instance) string {
 			keyStyle.Render("↵/o")+descStyle.Render("       - Attach to the selected session"),
 			keyStyle.Render("ctrl-q")+descStyle.Render("    - Detach from session"),
 			"",
-			headerStyle.Render("Other:"),
-			keyStyle.Render("tab")+descStyle.Render("       - Switch between preview and diff tabs"),
-			keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in diff view"),
-			keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
-			"",
 			headerStyle.Render("Handoff:"),
 			keyStyle.Render("p")+descStyle.Render("         - Commit and push branch to github"),
 			keyStyle.Render("c")+descStyle.Render("         - Checkout: commit changes and pause session"),
 			keyStyle.Render("r")+descStyle.Render("         - Resume a paused session"),
+			"",
+			headerStyle.Render("Other:"),
+			keyStyle.Render("tab")+descStyle.Render("       - Switch between preview and diff tabs"),
+			keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in diff view"),
+			keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
 		)
 		return content
 
