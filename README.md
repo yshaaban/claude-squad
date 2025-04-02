@@ -46,7 +46,7 @@ Available Commands:
   version     Print the version number of claude-squad
 
 Flags:
-  -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts
+  -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts for claude code & aider
   -h, --help             help for claude-squad
   -p, --program string   Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
 ```
