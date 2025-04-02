@@ -37,6 +37,7 @@ type MenuState int
 
 const (
 	StateDefault MenuState = iota
+	StateEmpty
 	StateNewInstance
 	StatePrompt
 )
@@ -54,12 +55,12 @@ type Menu struct {
 
 var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyHelp, keys.KeyQuit}
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
-var promptMenuOptions = []keys.KeyName{keys.KeyEnter}
+var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 
 func NewMenu() *Menu {
 	return &Menu{
 		options:     defaultMenuOptions,
-		state:       StateDefault,
+		state:       StateEmpty,
 		isInDiffTab: false,
 		keyDown:     -1,
 	}
@@ -82,26 +83,35 @@ func (m *Menu) SetState(state MenuState) {
 // SetInstance updates the current instance and refreshes menu options
 func (m *Menu) SetInstance(instance *session.Instance) {
 	m.instance = instance
-	if m.state == StateDefault {
-		m.updateOptions()
+	// Only change the state if we're not in a special state (NewInstance or Prompt)
+	if m.state != StateNewInstance && m.state != StatePrompt {
+		if m.instance != nil {
+			m.state = StateDefault
+		} else {
+			m.state = StateEmpty
+		}
 	}
+	m.updateOptions()
 }
 
 // SetInDiffTab updates whether we're currently in the diff tab
 func (m *Menu) SetInDiffTab(inDiffTab bool) {
 	m.isInDiffTab = inDiffTab
-	if m.state == StateDefault {
-		m.updateOptions()
-	}
+	m.updateOptions()
 }
 
 // updateOptions updates the menu options based on current state and instance
 func (m *Menu) updateOptions() {
 	switch m.state {
-	case StateDefault:
+	case StateEmpty:
 		m.options = defaultMenuOptions
+	case StateDefault:
 		if m.instance != nil {
+			// When there is an instance, show that instance's options
 			m.addInstanceOptions()
+		} else {
+			// When there is no instance, show the empty state
+			m.options = defaultMenuOptions
 		}
 	case StateNewInstance:
 		m.options = newInstanceMenuOptions
@@ -170,8 +180,15 @@ func (m *Menu) String() string {
 			localDescStyle = localDescStyle.Underline(true)
 		}
 
-		// Check if we're in the action group (middle group)
-		inActionGroup := i >= groups[1].start && i < groups[1].end
+		var inActionGroup bool
+		switch m.state {
+		case StateEmpty:
+			// For empty state, the action group is the first group
+			inActionGroup = i <= 1
+		default:
+			// For other states, the action group is the second group
+			inActionGroup = i >= groups[1].start && i < groups[1].end
+		}
 
 		if inActionGroup {
 			s.WriteString(localActionStyle.Render(binding.Help().Key))

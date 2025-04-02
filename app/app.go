@@ -273,7 +273,13 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.state = stateDefault
 			m.promptAfterName = false
 			m.list.Kill()
-			return m, tea.WindowSize()
+			return m, tea.Sequence(
+				tea.WindowSize(),
+				func() tea.Msg {
+					m.menu.SetState(ui.StateDefault)
+					return nil
+				},
+			)
 		}
 
 		instance := m.list.GetInstances()[m.list.NumInstances()-1]
@@ -334,6 +340,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		case tea.KeyEsc:
 			m.list.Kill()
 			m.state = stateDefault
+			m.instanceChanged()
+
 			return m, tea.Sequence(
 				tea.WindowSize(),
 				func() tea.Msg {
