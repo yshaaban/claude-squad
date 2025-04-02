@@ -42,12 +42,13 @@ Available Commands:
   completion  Generate the autocompletion script for the specified shell
   debug       Print debug information like config paths
   help        Help about any command
+  reset       Reset all stored instances
+  version     Print the version number of claude-squad
 
 Flags:
-  -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts, even while you've exited the app.
+  -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts
   -h, --help             help for claude-squad
-  -p, --program string   Program to run in new instances (e.g. 'aider --model sonnet --api-key anthropic=XXX')
-      --reset            Reset all stored instances
+  -p, --program string   Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
 ```
 
 Run the application with:
