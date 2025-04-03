@@ -1,8 +1,14 @@
 # Claude Squad
 
-Claude Squad is terminal UI that manages multiple Claude Code (and other local agents including Aider) in separate workspaces, allowing you to work on different tasks simultaneously.
+Claude Squad is a terminal app that manages multiple Claude Code (and other local agents including Aider) in separate workspaces, allowing you to work on multiple tasks simultaneously.
 
 ![Claude Squad Screenshot](assets/screenshot.png)
+
+### Highlights
+- Complete tasks in the background (including yolo / auto-accept mode!)
+- Manage instances and tasks in one terminal window
+- Review changes before applying them, checkout changes before pushing them
+- Each task gets its own isolated git workspace, so no conflicts
 
 ### Installation
 
@@ -18,25 +24,19 @@ This will install the `cs` binary to `~/.local/bin` and add it to your PATH. To 
 curl -fsSL https://raw.githubusercontent.com/stmg-ai/claude-squad/main/install.sh | bash -s -- --name <name>
 ```
 
-### Features
-- Complete tasks in the background (including yolo / auto yes mode!)
-- Manage instances and tasksin one terminal window
-- Review changes before applying them, checkout change before pushing them
-- Each task gets its own git workspace, so no conflicts
-
-Alternatively, you can also install `claude-squad` by building from source or installing a pre-built binary (see project repository for details).
+Alternatively, you can also install `claude-squad` by building from source or installing a [pre-built binary](https://github.com/smtg-ai/claude-squad/releases).
 
 ### Prerequisites
 
 - [tmux](https://github.com/tmux/tmux/wiki/Installing)
-- [git](https://git-scm.com/downloads)
+- [gh](https://cli.github.com/)
 
 ### Usage
 
 ```
 Usage:
-  claude-squad [flags]
-  claude-squad [command]
+  cs [flags]
+  cs [command]
 
 Available Commands:
   completion  Generate the autocompletion script for the specified shell
@@ -54,14 +54,16 @@ Flags:
 Run the application with:
 
 ```bash
-claude-squad
+cs
 ```
 
 To use a specific AI assistant program:
 
 ```bash
-claude-squad -p "aider --model ollama_chat/gemma3:1b"
+cs -p "aider --model ollama_chat/gemma3:1b"
 ```
+
+or modify the `config` file (path can be found by running `cs debug`).
 
 #### Menu
 The menu at the bottom of the screen shows available commands: 
@@ -73,38 +75,17 @@ The menu at the bottom of the screen shows available commands:
 - `↑/j`, `↓/k` - Navigate between sessions
 
 ##### Actions
-- `⏎/o` - Attach to the selected session to reprompt
+- `↵/o` - Attach to the selected session to reprompt
 - `ctrl-q` - Detach from session
 - `s` - Commit and push branch to github
 - `c` - Checkout. Commits changes and pauses the session
 - `r` - Resume a paused session
+- `?` - Show help menu
 
 ##### Navigation
 - `tab` - Switch between preview tab and diff tab
 - `q` - Quit the application
 - `shift-↓/↑` - scroll in diff view
-
-#### Session States
-
-- **Running** - Claude is actively working
-- **Ready** - Claude is waiting for input
-- **Paused** - Session is paused so you can checkout the branch to review changes. 
-
-When you create a new session:
-1. A new git branch is created for your session
-2. A git worktree is created from that branch
-3. A tmux session is launched with your chosen AI assistant tool (Claude Code by default)
-
-When you pause a session:
-1. Changes are committed to the branch
-2. The tmux session is closed
-3. The worktree is removed (but the branch is preserved)
-4. Branch name is copied to clipboard for you to checkout
-
-When you resume a session:
-1. The worktree is recreated from the preserved branch (you cannot have the branch checked out to do this)
-2. A new tmux session is launched with your AI assistant
-3. You can continue from where you left off
 
 ### How It Works
 
