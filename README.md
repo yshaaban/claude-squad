@@ -1,4 +1,4 @@
-# Claude Squad
+# Claude Squad [![CI](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml/badge.svg)](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/smtg-ai/claude-squad)](https://github.com/smtg-ai/claude-squad/releases/latest)
 
 Claude Squad is a terminal app that manages multiple Claude Code (and other local agents including Aider) in separate workspaces, allowing you to work on multiple tasks simultaneously.
 
