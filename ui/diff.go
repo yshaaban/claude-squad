@@ -49,7 +49,7 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 		"No changes",
 	)
 
-	if !instance.Started() {
+	if instance == nil || !instance.Started() {
 		d.viewport.SetContent(centeredFallbackMessage)
 		return
 	}
