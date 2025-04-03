@@ -76,6 +76,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		CreatedAt: i.CreatedAt,
 		UpdatedAt: time.Now(),
 		Program:   i.Program,
+		AutoYes:   i.AutoYes,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -101,8 +102,9 @@ func (i *Instance) ToInstanceData() InstanceData {
 	return data
 }
 
-func FromInstanceData(data InstanceData) *Instance {
-	return &Instance{
+// FromInstanceData creates a new Instance from serialized data
+func FromInstanceData(data InstanceData) (*Instance, error) {
+	instance := &Instance{
 		Title:     data.Title,
 		Path:      data.Path,
 		Branch:    data.Branch,
@@ -125,20 +127,16 @@ func FromInstanceData(data InstanceData) *Instance {
 			Content: data.DiffStats.Content,
 		},
 	}
-}
 
-// FromInstanceData creates a new Instance from serialized data and starts it.
-func FromInstanceDataAndStart(data InstanceData, autoYes bool) (*Instance, error) {
-	instance := FromInstanceData(data)
-	instance.AutoYes = autoYes
 	if instance.Paused() {
 		instance.started = true
-		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
+		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program, instance.AutoYes)
 	} else {
-		if err := instance.Start(false, autoYes); err != nil {
+		if err := instance.Start(false); err != nil {
 			return nil, err
 		}
 	}
+
 	return instance, nil
 }
 
@@ -150,7 +148,7 @@ type InstanceOptions struct {
 	Path string
 	// Program is the program to run in the instance (e.g. "claude", "aider --model ollama_chat/gemma3:1b")
 	Program string
-
+	// If AutoYes is true, then
 	AutoYes bool
 }
 
@@ -188,12 +186,12 @@ func (i *Instance) SetStatus(status Status) {
 }
 
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
-func (i *Instance) Start(firstTimeSetup bool, autoYes bool) error {
+func (i *Instance) Start(firstTimeSetup bool) error {
 	if i.Title == "" {
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
-	tmuxSession := tmux.NewTmuxSession(i.Title, i.Program)
+	tmuxSession := tmux.NewTmuxSession(i.Title, i.Program, i.AutoYes)
 	i.tmuxSession = tmuxSession
 
 	if firstTimeSetup {
@@ -231,7 +229,7 @@ func (i *Instance) Start(firstTimeSetup bool, autoYes bool) error {
 		}
 
 		// Create new session
-		if err := i.tmuxSession.Start(i.Program, i.gitWorktree.GetWorktreePath(), autoYes); err != nil {
+		if err := i.tmuxSession.Start(i.Program, i.gitWorktree.GetWorktreePath()); err != nil {
 			// Cleanup git worktree if tmux session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
@@ -429,7 +427,7 @@ func (i *Instance) Pause() error {
 }
 
 // Resume recreates the worktree and restarts the tmux session
-func (i *Instance) Resume(autoYes bool) error {
+func (i *Instance) Resume() error {
 	if !i.started {
 		return fmt.Errorf("cannot resume instance that has not been started")
 	}
@@ -452,7 +450,7 @@ func (i *Instance) Resume(autoYes bool) error {
 	}
 
 	// Create new tmux session
-	if err := i.tmuxSession.Start(i.Program, i.gitWorktree.GetWorktreePath(), autoYes); err != nil {
+	if err := i.tmuxSession.Start(i.Program, i.gitWorktree.GetWorktreePath()); err != nil {
 		log.ErrorLog.Print(err)
 		// Cleanup git worktree if tmux session creation fails
 		if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {

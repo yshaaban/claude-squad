@@ -24,10 +24,13 @@ func RunDaemon(cfg *config.Config) error {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
-	// Assume autoyes is on.
-	instances, err := storage.LoadAndStartInstances(true)
+	instances, err := storage.LoadInstances()
 	if err != nil {
 		return fmt.Errorf("failed to load instacnes: %w", err)
+	}
+	for _, instance := range instances {
+		// Assume AutoYes is true if the daemon is running.
+		instance.AutoYes = true
 	}
 
 	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond

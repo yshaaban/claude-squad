@@ -112,7 +112,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	h.list = ui.NewList(&h.spinner, autoYes)
 
 	// Load saved instances
-	instances, err := storage.LoadAndStartInstances(autoYes)
+	instances, err := storage.LoadInstances()
 	if err != nil {
 		fmt.Printf("Failed to load instances: %v\n", err)
 		os.Exit(1)
@@ -307,7 +307,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(fmt.Errorf("title cannot be empty"))
 			}
 
-			if err := instance.Start(true, m.autoYes); err != nil {
+			if err := instance.Start(true); err != nil {
 				m.list.Kill()
 				m.state = stateDefault
 				return m, m.handleError(err)
@@ -317,6 +317,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(err)
 			}
 			// Instance added successfully, call the finalizer.
+			m.newInstanceFinalizer()
+			if m.autoYes {
+				instance.AutoYes = true
+			}
+
 			m.newInstanceFinalizer()
 			m.state = stateDefault
 			if m.promptAfterName {
@@ -537,7 +542,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil {
 			return m, nil
 		}
-		if err := selected.Resume(m.autoYes); err != nil {
+		if err := selected.Resume(); err != nil {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()
