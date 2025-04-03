@@ -4,12 +4,6 @@ Claude Squad is terminal UI that manages multiple Claude Code (and other local a
 
 ![Claude Squad Screenshot](assets/screenshot.png)
 
-### Features
-- Complete tasks in the background (including yolo / auto yes mode!)
-- Manage instances and tasksin one terminal window
-- Review changes before applying them, checkout change before pushing them
-- Each task gets its own git workspace, so no conflicts
-
 ### Installation
 
 The easiest way to install `claude-squad` is by running the following command:
@@ -23,6 +17,12 @@ This will install the `cs` binary to `~/.local/bin` and add it to your PATH. To 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/stmg-ai/claude-squad/main/install.sh | bash -s -- --name <name>
 ```
+
+### Features
+- Complete tasks in the background (including yolo / auto yes mode!)
+- Manage instances and tasksin one terminal window
+- Review changes before applying them, checkout change before pushing them
+- Each task gets its own git workspace, so no conflicts
 
 Alternatively, you can also install `claude-squad` by building from source or installing a pre-built binary (see project repository for details).
 
