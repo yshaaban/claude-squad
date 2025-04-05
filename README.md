@@ -10,6 +10,12 @@ Claude Squad is a terminal app that manages multiple Claude Code (and other loca
 - Review changes before applying them, checkout changes before pushing them
 - Each task gets its own isolated git workspace, so no conflicts
 
+<br />
+
+https://github.com/user-attachments/assets/aef18253-e58f-4525-9032-f5a3d66c975a
+
+<br />
+
 ### Installation
 
 The easiest way to install `claude-squad` is by running the following command:
