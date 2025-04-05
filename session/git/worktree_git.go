@@ -40,7 +40,7 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 		}
 
 		// Create commit
-		if _, err := g.runGitCommand(g.worktreePath, "commit", "-m", commitMessage); err != nil {
+		if _, err := g.runGitCommand(g.worktreePath, "commit", "-m", commitMessage, "--no-verify"); err != nil {
 			log.ErrorLog.Print(err)
 			return fmt.Errorf("failed to commit changes: %w", err)
 		}
