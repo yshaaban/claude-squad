@@ -138,7 +138,6 @@ func StopDaemon() error {
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.InfoLog.Print("no daemon is running (PID file not found)")
 			return nil
 		}
 		return fmt.Errorf("failed to read PID file: %w", err)
