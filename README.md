@@ -1,6 +1,6 @@
 # Claude Squad [![CI](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml/badge.svg)](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/smtg-ai/claude-squad)](https://github.com/smtg-ai/claude-squad/releases/latest)
 
-Claude Squad is a terminal app that manages multiple Claude Code (and other local agents including Aider) in separate workspaces, allowing you to work on multiple tasks simultaneously.
+Claude Squad is a terminal app that manages multiple [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex) (and other local agents including Aider) in separate workspaces, allowing you to work on multiple tasks simultaneously.
 
 ![Claude Squad Screenshot](assets/screenshot.png)
 
@@ -63,13 +63,13 @@ Run the application with:
 cs
 ```
 
-To use a specific AI assistant program:
+<br />
 
-```bash
-cs -p "aider --model ollama_chat/gemma3:1b"
-```
+<b>To use Claude Squad with Codex or another AI assistant:</b>
+1. Set your OpenAI API key in your environment: `export OPENAI_API_KEY=<key>`
+2. Run `cs -p "codex"` or `cs -p "aider"` or modify your config file (path can be found by running `cs debug`).
 
-or modify the `config` file (path can be found by running `cs debug`).
+<br />
 
 #### Menu
 The menu at the bottom of the screen shows available commands: 
