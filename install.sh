@@ -30,7 +30,7 @@ setup_shell_and_path() {
 
 detect_platform_and_arch() {
     PLATFORM="$(uname | tr '[:upper:]' '[:lower:]')"
-    if [ "$PLATFORM" = "mingw32_nt" ] || [ "$PLATFORM" = "mingw64_nt" ]; then
+    if [[ "$PLATFORM" == mingw*_nt* ]]; then
         PLATFORM="windows"
     fi
 
