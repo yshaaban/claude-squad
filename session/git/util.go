@@ -66,3 +66,21 @@ func IsGitRepo(path string) bool {
 		path = parent
 	}
 }
+
+func findGitRepoRoot(path string) (string, error) {
+	currentPath := path
+	for {
+		_, err := git.PlainOpen(currentPath)
+		if err == nil {
+			// Found the repository root
+			return currentPath, nil
+		}
+
+		parent := filepath.Dir(currentPath)
+		if parent == currentPath {
+			// Reached the filesystem root without finding a repository
+			return "", fmt.Errorf("failed to find Git repository root from path: %s", path)
+		}
+		currentPath = parent
+	}
+}

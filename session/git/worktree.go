@@ -54,6 +54,11 @@ func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, bra
 		absPath = repoPath
 	}
 
+	repoPath, err = findGitRepoRoot(absPath)
+	if err != nil {
+		return nil, "", err
+	}
+
 	worktreeDir, err := getWorktreeDirectory()
 	if err != nil {
 		return nil, "", err
@@ -63,7 +68,7 @@ func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, bra
 	worktreePath = worktreePath + "_" + fmt.Sprintf("%x", time.Now().UnixNano())
 
 	return &GitWorktree{
-		repoPath:     absPath,
+		repoPath:     repoPath,
 		sessionName:  sessionName,
 		branchName:   branchName,
 		worktreePath: worktreePath,
