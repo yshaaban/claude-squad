@@ -1,6 +1,6 @@
 # Claude Squad [![CI](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml/badge.svg)](https://github.com/smtg-ai/claude-squad/actions/workflows/build.yml) [![GitHub Release](https://img.shields.io/github/v/release/smtg-ai/claude-squad)](https://github.com/smtg-ai/claude-squad/releases/latest)
 
-Claude Squad is a terminal app that manages multiple [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex) (and other local agents including Aider) in separate workspaces, allowing you to work on multiple tasks simultaneously.
+Claude Squad is a terminal app that manages multiple [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex) (and other local agents including [Aider](https://github.com/Aider-AI/aider)) in separate workspaces, allowing you to work on multiple tasks simultaneously.
 
 ![Claude Squad Screenshot](assets/screenshot.png)
 
@@ -65,9 +65,12 @@ cs
 
 <br />
 
-<b>To use Claude Squad with Codex or another AI assistant:</b>
-1. Set your OpenAI API key in your environment: `export OPENAI_API_KEY=<key>`
-2. Run `cs -p "codex"` or `cs -p "aider"` or modify your config file (path can be found by running `cs debug`).
+<b>Using Claude Squad with other AI assistants:</b>
+- For [Codex](https://github.com/openai/codex): Set your API key with `export OPENAI_API_KEY=<your_key>`
+- Launch with specific assistants:
+   - Codex: `cs -p "codex"`
+   - Aider: `cs -p "aider ..."`
+- Make this the default, by modifying the config file (locate with `cs debug`)
 
 <br />
 
