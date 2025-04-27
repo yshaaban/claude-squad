@@ -73,6 +73,11 @@ func (g *GitWorktree) SetupNewWorktree() error {
 
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
+		if strings.Contains(err.Error(), "fatal: ambiguous argument 'HEAD'") ||
+			strings.Contains(err.Error(), "fatal: not a valid object name") ||
+			strings.Contains(err.Error(), "fatal: HEAD: not a valid object name") {
+			return fmt.Errorf("this appears to be a brand new repository: please create an initial commit before creating an instance")
+		}
 		return fmt.Errorf("failed to get HEAD commit hash: %w", err)
 	}
 	headCommit := strings.TrimSpace(string(output))
