@@ -53,6 +53,7 @@ Available Commands:
 
 Flags:
   -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts for claude code & aider
+  -s, --simple           Simple mode: run Claude in current directory (no worktree) with auto-yes enabled and immediate prompt
   -h, --help             help for claude-squad
   -p, --program string   Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
 ```
@@ -60,7 +61,9 @@ Flags:
 Run the application with:
 
 ```bash
-cs
+cs                  # Standard mode with multiple instances
+cs -s               # Simple mode: run in current directory with auto-yes
+cs -p "aider" -s    # Simple mode with a specific program
 ```
 
 <br />
@@ -98,9 +101,17 @@ The menu at the bottom of the screen shows available commands:
 
 ### How It Works
 
+#### Standard Mode
 1. **tmux** to create isolated terminal sessions for each agent
 2. **git worktrees** to isolate codebases so each session works on its own branch
 3. A simple TUI interface for easy navigation and management
+
+#### Simple Mode
+1. Launches Claude directly in your current repository directory
+2. Automatically enables auto-yes
+3. Opens a prompt dialog immediately to get started
+4. Simplifies the UI for a streamlined experience
+5. No worktree creation or branch isolation (changes directly to your working directory)
 
 ### License
 

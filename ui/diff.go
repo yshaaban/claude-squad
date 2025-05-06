@@ -53,6 +53,53 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 		d.viewport.SetContent(centeredFallbackMessage)
 		return
 	}
+	
+	// Special handling for simple mode (in-place) instances
+	if instance.InPlace {
+		// Create a more prominent warning message
+		warningStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#f59e0b")).
+			Bold(true)
+			
+		infoStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#60a5fa"))
+			
+		headerStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ffffff")).
+			Background(lipgloss.Color("#f0dde4")).
+			Bold(true).
+			Padding(0, 1)
+			
+		header := headerStyle.Render(" SIMPLE MODE ACTIVE ")
+		warningTitle := warningStyle.Render("⚠️  Working Directory Warning")
+		warningMessage := "Changes are made directly to your working directory without isolation.\nThis means all file modifications will immediately affect your repository."
+		
+		infoTitle := infoStyle.Render("ℹ️  Git Operations")
+		infoMessage := "• Git diff tracking is disabled in Simple Mode\n• You must use git commands manually for version control\n• To track changes: use 'git diff', 'git add', and 'git commit'\n• For branch isolation, consider using standard mode instead"
+		
+		simpleModeMessage := lipgloss.JoinVertical(
+			lipgloss.Center,
+			"",
+			header,
+			"",
+			warningTitle,
+			warningMessage,
+			"",
+			infoTitle,
+			infoMessage,
+			"",
+		)
+		
+		centeredMessage := lipgloss.Place(
+			d.width,
+			d.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			simpleModeMessage,
+		)
+		d.viewport.SetContent(centeredMessage)
+		return
+	}
 
 	stats := instance.GetDiffStats()
 	if stats == nil {

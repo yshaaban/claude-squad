@@ -51,6 +51,16 @@ var mainTitle = lipgloss.NewStyle().
 var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
+	
+var simpleModeStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("#f0dde4")).
+	Foreground(lipgloss.Color("#1a1a1a"))
+	
+var simpleLabelStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("#f0dde4")).
+	Foreground(lipgloss.Color("#1a1a1a")).
+	Bold(true).
+	Padding(0, 1)
 
 type List struct {
 	items         []*session.Instance
@@ -139,6 +149,13 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	// Cut the title if it's too long
 	titleText := i.Title
+	
+	// Add a styled indicator for simple mode instances
+	if i.InPlace {
+		simpleLabel := simpleLabelStyle.Render("SIMPLE")
+		titleText = lipgloss.JoinHorizontal(lipgloss.Left, simpleLabel, " ", titleText)
+	}
+	
 	widthAvail := r.width - 3 - len(prefix) - 1
 	if widthAvail > 0 && widthAvail < len(titleText) && len(titleText) >= widthAvail-3 {
 		titleText = titleText[:widthAvail-3] + "..."
@@ -225,6 +242,7 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 func (l *List) String() string {
 	const titleText = " Instances "
 	const autoYesText = " auto-yes "
+	const simpleModeText = " simple "
 
 	// Write the title.
 	var b strings.Builder
@@ -234,16 +252,39 @@ func (l *List) String() string {
 	// Write title line
 	// add padding of 2 because the border on list items adds some extra characters
 	titleWidth := AdjustPreviewWidth(l.width) + 2
-	if !l.autoyes {
+	
+	// Determine if we have any simple mode (in-place) instances
+	hasSimpleMode := false
+	for _, item := range l.items {
+		if item.InPlace {
+			hasSimpleMode = true
+			break
+		}
+	}
+	
+	// Render header based on mode flags
+	if !l.autoyes && !hasSimpleMode {
+		// Standard header
 		b.WriteString(lipgloss.Place(
 			titleWidth, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText)))
-	} else {
+	} else if l.autoyes && !hasSimpleMode {
+		// Auto-yes only
 		title := lipgloss.Place(
 			titleWidth/2, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText))
 		autoYes := lipgloss.Place(
 			titleWidth-(titleWidth/2), 1, lipgloss.Right, lipgloss.Bottom, autoYesStyle.Render(autoYesText))
 		b.WriteString(lipgloss.JoinHorizontal(
 			lipgloss.Top, title, autoYes))
+	} else if hasSimpleMode {
+		// Simple mode (always has auto-yes too)
+		title := lipgloss.Place(
+			titleWidth/3, 1, lipgloss.Left, lipgloss.Bottom, mainTitle.Render(titleText))
+		autoYes := lipgloss.Place(
+			titleWidth/3, 1, lipgloss.Center, lipgloss.Bottom, autoYesStyle.Render(autoYesText))
+		simpleMode := lipgloss.Place(
+			titleWidth/3, 1, lipgloss.Right, lipgloss.Bottom, simpleModeStyle.Render(simpleModeText))
+		b.WriteString(lipgloss.JoinHorizontal(
+			lipgloss.Top, title, autoYes, simpleMode))
 	}
 
 	b.WriteString("\n")

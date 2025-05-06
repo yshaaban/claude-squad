@@ -125,11 +125,20 @@ func (m *Menu) addInstanceOptions() {
 	options := []keys.KeyName{keys.KeyNew, keys.KeyKill}
 
 	// Action group
-	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeySubmit}
-	if m.instance.Status == session.Paused {
-		actionGroup = append(actionGroup, keys.KeyResume)
+	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeyPrompt}
+	
+	// Check for in-place (simple mode) instance
+	if m.instance.InPlace {
+		// Simple mode has limited actions - no checkout/resume
+		// Keep submit out of simple mode since it's meant for git operations
 	} else {
-		actionGroup = append(actionGroup, keys.KeyCheckout)
+		// Standard mode - add submit and checkout/resume
+		actionGroup = append(actionGroup, keys.KeySubmit)
+		if m.instance.Status == session.Paused {
+			actionGroup = append(actionGroup, keys.KeyResume)
+		} else {
+			actionGroup = append(actionGroup, keys.KeyCheckout)
+		}
 	}
 
 	// Navigation group (when in diff tab)

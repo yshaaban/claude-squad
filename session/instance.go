@@ -51,6 +51,8 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// InPlace is true if the instance should run in the current directory without creating a worktree
+	InPlace bool
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -148,8 +150,10 @@ type InstanceOptions struct {
 	Path string
 	// Program is the program to run in the instance (e.g. "claude", "aider --model ollama_chat/gemma3:1b")
 	Program string
-	// If AutoYes is true, then
+	// If AutoYes is true, the instance will automatically press enter when prompted
 	AutoYes bool
+	// If InPlace is true, the instance will run in the current directory without creating a worktree
+	InPlace bool
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -170,7 +174,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:     0,
 		CreatedAt: t,
 		UpdatedAt: t,
-		AutoYes:   false,
+		AutoYes:   opts.AutoYes,
+		InPlace:   opts.InPlace,
 	}, nil
 }
 
@@ -178,6 +183,14 @@ func (i *Instance) RepoName() (string, error) {
 	if !i.started {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
 	}
+	
+	// Handle Simple Mode (in-place) instances differently
+	if i.InPlace {
+		// For Simple Mode, use the directory name as the repo name
+		return filepath.Base(i.Path), nil
+	}
+	
+	// Standard mode - use git worktree repo name
 	return i.gitWorktree.GetRepoName(), nil
 }
 
@@ -194,15 +207,6 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 	tmuxSession := tmux.NewTmuxSession(i.Title, i.Program)
 	i.tmuxSession = tmuxSession
 
-	if firstTimeSetup {
-		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
-		if err != nil {
-			return fmt.Errorf("failed to create git worktree: %w", err)
-		}
-		i.gitWorktree = gitWorktree
-		i.Branch = branchName
-	}
-
 	// Setup error handler to cleanup resources on any error
 	var setupErr error
 	defer func() {
@@ -215,14 +219,30 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 	}()
 
-	if !firstTimeSetup {
+	if i.InPlace {
+		// Simple mode - run directly in current directory without worktree
+		// Create new session directly in the current path
+		if err := i.tmuxSession.Start(i.Program, i.Path); err != nil {
+			setupErr = fmt.Errorf("failed to start new session: %w", err)
+			return setupErr
+		}
+	} else if !firstTimeSetup {
+		// Regular mode - load existing instance
 		// Reuse existing session
 		if err := tmuxSession.Restore(); err != nil {
 			setupErr = fmt.Errorf("failed to restore existing session: %w", err)
 			return setupErr
 		}
 	} else {
-		// Setup git worktree first
+		// Regular mode - create new instance with worktree
+		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
+		if err != nil {
+			return fmt.Errorf("failed to create git worktree: %w", err)
+		}
+		i.gitWorktree = gitWorktree
+		i.Branch = branchName
+
+		// Setup git worktree
 		if err := i.gitWorktree.Setup(); err != nil {
 			setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
 			return setupErr
@@ -339,6 +359,9 @@ func (i *Instance) GetGitWorktree() (*git.GitWorktree, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot get git worktree for instance that has not been started")
 	}
+	if i.InPlace {
+		return nil, fmt.Errorf("no git worktree available for in-place instance")
+	}
 	return i.gitWorktree, nil
 }
 
@@ -372,6 +395,9 @@ func (i *Instance) Pause() error {
 	}
 	if i.Status == Paused {
 		return fmt.Errorf("instance is already paused")
+	}
+	if i.InPlace {
+		return fmt.Errorf("cannot pause in-place instances (simple mode)")
 	}
 
 	var errs []error
@@ -473,6 +499,12 @@ func (i *Instance) UpdateDiffStats() error {
 
 	if i.Status == Paused {
 		// Keep the previous diff stats if the instance is paused
+		return nil
+	}
+	
+	if i.InPlace {
+		// Simple mode doesn't use worktrees, so no diff stats
+		i.diffStats = nil
 		return nil
 	}
 

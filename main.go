@@ -17,10 +17,11 @@ import (
 )
 
 var (
-	version     = "1.0.0"
-	programFlag string
-	autoYesFlag bool
-	daemonFlag  bool
+	version        = "1.0.0"
+	programFlag    string
+	autoYesFlag    bool
+	daemonFlag     bool
+	simpleModeFlag bool
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - A terminal-based session manager",
@@ -55,7 +56,7 @@ var (
 			}
 			// AutoYes flag overrides config
 			autoYes := cfg.AutoYes
-			if autoYesFlag {
+			if autoYesFlag || simpleModeFlag {
 				autoYes = true
 			}
 			if autoYes {
@@ -70,7 +71,7 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, program, autoYes)
+			return app.Run(ctx, program, autoYes, simpleModeFlag)
 		},
 	}
 
@@ -144,6 +145,8 @@ func init() {
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,
 		"[experimental] If enabled, all instances will automatically accept prompts")
+	rootCmd.Flags().BoolVarP(&simpleModeFlag, "simple", "s", false,
+		"Run Claude in the current repository directory (no worktree) with auto-yes enabled")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
 

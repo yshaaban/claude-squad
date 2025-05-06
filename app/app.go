@@ -20,9 +20,9 @@ import (
 const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool) error {
+func Run(ctx context.Context, program string, autoYes bool, simpleMode bool) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes),
+		newHome(ctx, program, autoYes, simpleMode),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -47,6 +47,7 @@ type home struct {
 
 	program string
 	autoYes bool
+	simpleMode bool
 
 	// ui components
 	list         *ui.List
@@ -82,7 +83,7 @@ type home struct {
 	keySent bool
 }
 
-func newHome(ctx context.Context, program string, autoYes bool) *home {
+func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -106,24 +107,91 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		appConfig:    appConfig,
 		program:      program,
 		autoYes:      autoYes,
+		simpleMode:   simpleMode,
 		state:        stateDefault,
 		appState:     appState,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
-	// Load saved instances
-	instances, err := storage.LoadInstances()
-	if err != nil {
-		fmt.Printf("Failed to load instances: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Add loaded instances to the list
-	for _, instance := range instances {
-		// Call the finalizer immediately.
+	// Check if we're in simple mode
+	if simpleMode {
+		// Create a new instance to run in the current directory
+		currentDir, err := os.Getwd()
+		if err != nil {
+			// Use the proper error handling mechanism
+			h.errBox.SetError(fmt.Errorf("Failed to get current directory: %w", err))
+			// Return the home object - the error will be displayed in the UI
+			return h
+		}
+		
+		// Check for existing simple mode instances in this directory
+		instances, err := storage.LoadInstances()
+		if err == nil {
+			for _, instance := range instances {
+				if instance.InPlace && filepath.Clean(instance.Path) == filepath.Clean(currentDir) {
+					h.errBox.SetError(fmt.Errorf("A Simple Mode instance already exists for this directory. Please use that instance or run in a different directory."))
+					
+					// Add the existing instances to the list
+					for _, existingInstance := range instances {
+						h.list.AddInstance(existingInstance)()
+						if autoYes {
+							existingInstance.AutoYes = true
+						}
+					}
+					
+					return h
+				}
+			}
+		}
+		
+		// Create a default instance name based on timestamp
+		instanceName := fmt.Sprintf("simple-%s", time.Now().Format("20060102-150405"))
+		
+		// Create a new instance that runs in-place (no worktree)
+		instance, err := session.NewInstance(session.InstanceOptions{
+			Title:     instanceName,
+			Path:      currentDir,
+			Program:   program,
+			AutoYes:   true,
+			InPlace:   true,
+		})
+		if err != nil {
+			// Use the proper error handling mechanism
+			h.errBox.SetError(fmt.Errorf("Failed to create instance: %w", err))
+			return h
+		}
+		
+		// Start the instance immediately
+		if err := instance.Start(true); err != nil {
+			// Use the proper error handling mechanism
+			h.errBox.SetError(fmt.Errorf("Failed to start instance: %w", err))
+			return h
+		}
+		
+		// Add instance to the list and select it
 		h.list.AddInstance(instance)()
-		if autoYes {
-			instance.AutoYes = true
+		h.list.SetSelectedInstance(0)
+		instance.AutoYes = true
+
+		// Immediately open prompt dialog
+		h.state = statePrompt
+		h.menu.SetState(ui.StatePrompt)
+		h.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
+	} else {
+		// Standard mode - load saved instances
+		instances, err := storage.LoadInstances()
+		if err != nil {
+			fmt.Printf("Failed to load instances: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Add loaded instances to the list
+		for _, instance := range instances {
+			// Call the finalizer immediately.
+			h.list.AddInstance(instance)()
+			if autoYes {
+				instance.AutoYes = true
+			}
 		}
 	}
 
@@ -133,8 +201,16 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	// List takes 30% of width, preview takes 70%
-	listWidth := int(float32(msg.Width) * 0.3)
+	var listWidth int
+	
+	// In simple mode, list takes minimal width (10%)
+	if m.simpleMode {
+		listWidth = int(float32(msg.Width) * 0.1)
+	} else {
+		// Standard mode - list takes 30% of width
+		listWidth = int(float32(msg.Width) * 0.3)
+	}
+	
 	tabsWidth := msg.Width - listWidth
 
 	// Menu takes 10% of height, list and window take 90%
