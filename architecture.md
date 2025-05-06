@@ -113,12 +113,23 @@ Manages AI assistant instances and their lifecycle:
 
 ### Instance Lifecycle
 
+#### Standard Mode
+
 1. **Creation**:
    - User creates a new instance with a title
    - New git branch created (prefix: "session/")
    - Worktree set up from current HEAD
    - Tmux session started in worktree
    - AI program launched
+
+#### Simple Mode
+
+1. **Creation**:
+   - User runs with the `-s` flag
+   - Instance created in the current directory (no worktree)
+   - Tmux session started in current directory
+   - AI program launched with auto-yes enabled
+   - Prompt dialog opened immediately
 
 2. **Interaction**:
    - User can view instance status in list view
@@ -136,10 +147,15 @@ Manages AI assistant instances and their lifecycle:
    - New tmux session started
    - Program relaunched
 
-5. **Termination**:
+5. **Termination (Standard Mode)**:
    - Tmux session closed
    - Worktree and branch removed
+   - Instance remains in storage for future use
+
+6. **Termination (Simple Mode)**:
+   - Tmux session closed and Claude process terminated
    - Instance removed from storage
+   - No branch/worktree cleanup needed
 
 ## Design Patterns
 
@@ -192,6 +208,37 @@ home struct in app.go
 List, TabbedWindow, Menu, ErrBox
 ```
 
+## Error Handling Principles
+
+1. **Graceful Degradation**:
+   - Functions return errors rather than panicking
+   - Resources are properly cleaned up on error
+   - Fallback mechanisms exist for critical components
+   
+2. **Defensive Programming**:
+   - Nil checks before accessing objects
+   - Error checking for all external operations
+   - Recovery mechanisms for unstable operations (PTY, tmux)
+   
+3. **User Feedback**:
+   - Errors displayed in UI via error box
+   - Informational messages for important operations
+   - Detailed logging with optional file output
+
+## Logging Architecture
+
+1. **Multi-level Logging**:
+   - InfoLog for general information
+   - WarningLog for potential issues
+   - ErrorLog for critical problems
+   
+2. **Configurable Destinations**:
+   - Console output by default (stdout/stderr)
+   - Optional file logging with --log-to-file flag
+   - Multi-writer approach when both enabled
+
 ## Conclusion
 
 Claude Squad uses a modular architecture with clear separation of concerns to manage multiple AI coding assistant instances effectively. The combination of git worktrees for isolation and tmux for terminal session management creates a powerful environment for working with multiple AI assistants simultaneously, while the Bubble Tea terminal UI provides an intuitive interface for users.
+
+The Simple Mode feature enhances usability by allowing quick operation in the current directory. Robust error handling and graceful failure recovery improve reliability, especially when running from different directories or encountering terminal state issues.
