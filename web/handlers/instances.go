@@ -1,0 +1,286 @@
+package handlers
+
+import (
+	"claude-squad/log"
+	"claude-squad/session"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+)
+
+// InstanceSummary represents condensed instance information for APIs.
+type InstanceSummary struct {
+	Title      string    `json:"title"`
+	Status     string    `json:"status"`
+	Path       string    `json:"path"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Program    string    `json:"program"`
+	InPlace    bool      `json:"in_place"`
+	DiffStats  DiffStats `json:"diff_stats,omitempty"`
+}
+
+// InstanceDetail represents detailed instance information.
+type InstanceDetail struct {
+	InstanceSummary
+	HasPrompt     bool   `json:"has_prompt"`
+	TMuxSession   string `json:"tmux_session,omitempty"`
+}
+
+// DiffStats represents git diff statistics.
+type DiffStats struct {
+	Added     int `json:"added"`
+	Removed   int `json:"removed"`
+}
+
+// InstanceOutput represents terminal output information.
+type InstanceOutput struct {
+	Content    string    `json:"content"`
+	Format     string    `json:"format"`
+	Timestamp  time.Time `json:"timestamp"`
+	HasPrompt  bool      `json:"has_prompt"`
+}
+
+// InstancesHandler handles listing all instances.
+func InstancesHandler(storage *session.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Load all instances
+		instances, err := storage.LoadInstances()
+		if err != nil {
+			log.ErrorLog.Printf("Error loading instances: %v", err)
+			http.Error(w, "Error loading instances", http.StatusInternalServerError)
+			return
+		}
+		
+		// Filter by status if requested
+		filter := r.URL.Query().Get("filter")
+		
+		// Convert to summary objects
+		summaries := make([]InstanceSummary, 0, len(instances))
+		for _, instance := range instances {
+			// Apply filter if needed
+			if filter != "" && filter != "all" {
+				if (filter == "running" && !instance.Started()) || 
+				   (filter == "paused" && !instance.Paused()) {
+					continue
+				}
+			}
+			
+			summary := instanceToSummary(instance)
+			summaries = append(summaries, summary)
+		}
+		
+		// Return as JSON
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"instances": summaries,
+		}); err != nil {
+			log.ErrorLog.Printf("Error encoding instances: %v", err)
+			http.Error(w, "Error encoding response", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+// InstanceDetailHandler handles getting details for a specific instance.
+func InstanceDetailHandler(storage *session.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if name == "" {
+			http.Error(w, "Instance name required", http.StatusBadRequest)
+			return
+		}
+		
+		// Find the instance
+		instance, err := findInstanceByTitle(storage, name)
+		if err != nil {
+			http.Error(w, "Instance not found", http.StatusNotFound)
+			return
+		}
+		
+		// Create detailed response
+		detail := InstanceDetail{
+			InstanceSummary: instanceToSummary(instance),
+			HasPrompt:       false, // Determine prompt status from output if needed
+		}
+		
+		// Include tmux session info if running
+		if instance.Started() && !instance.Paused() {
+			// Use instance title to derive tmux session name
+			detail.TMuxSession = "claudesquad_" + instance.Title
+		}
+		
+		// Return as JSON
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(detail); err != nil {
+			log.ErrorLog.Printf("Error encoding instance: %v", err)
+			http.Error(w, "Error encoding response", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+// InstanceOutputHandler handles getting terminal output for a specific instance.
+func InstanceOutputHandler(storage *session.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if name == "" {
+			http.Error(w, "Instance name required", http.StatusBadRequest)
+			return
+		}
+		
+		// Find the instance
+		instance, err := findInstanceByTitle(storage, name)
+		if err != nil {
+			http.Error(w, "Instance not found", http.StatusNotFound)
+			return
+		}
+		
+		// Get format parameter (ansi, html, text)
+		format := r.URL.Query().Get("format")
+		if format == "" {
+			format = "ansi"
+		}
+		
+		// Verify format is valid
+		if format != "ansi" && format != "html" && format != "text" {
+			http.Error(w, "Invalid format parameter", http.StatusBadRequest)
+			return
+		}
+		
+		// Only provide output for running instances
+		if !instance.Started() || instance.Paused() {
+			http.Error(w, "Instance is not running", http.StatusBadRequest)
+			return
+		}
+		
+		// Get terminal output
+		content, err := instance.Preview()
+		if err != nil {
+			log.ErrorLog.Printf("Error getting terminal output: %v", err)
+			http.Error(w, "Error getting terminal output", http.StatusInternalServerError)
+			return
+		}
+		
+		// Convert format if needed
+		if format == "html" {
+			content = convertAnsiToHtml(content)
+		} else if format == "text" {
+			content = stripAnsi(content)
+		}
+		
+		// Apply line limit if specified
+		limit := r.URL.Query().Get("limit")
+		if limit != "" {
+			// Parse limit and apply (implementation left as TODO)
+			// This would truncate content to the specified number of lines
+		}
+		
+		// Create response
+		output := InstanceOutput{
+			Content:    content,
+			Format:     format,
+			Timestamp:  time.Now(),
+			HasPrompt:  false, // Determine prompt status from content if needed
+		}
+		
+		// Return as JSON
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(output); err != nil {
+			log.ErrorLog.Printf("Error encoding output: %v", err)
+			http.Error(w, "Error encoding response", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+// ServerStatusHandler handles getting server status information.
+func ServerStatusHandler(version string, startTime time.Time) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status := map[string]interface{}{
+			"version": version,
+			"uptime":  time.Since(startTime).String(),
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			log.ErrorLog.Printf("Error encoding status: %v", err)
+			http.Error(w, "Error encoding response", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+// Helper functions
+
+// findInstanceByTitle finds an instance by its title.
+func findInstanceByTitle(storage *session.Storage, title string) (*session.Instance, error) {
+	instances, err := storage.LoadInstances()
+	if err != nil {
+		return nil, err
+	}
+	
+	for _, instance := range instances {
+		if instance.Title == title {
+			return instance, nil
+		}
+	}
+	
+	return nil, fmt.Errorf("instance not found: %s", title)
+}
+
+// instanceToSummary converts an Instance to an InstanceSummary.
+func instanceToSummary(instance *session.Instance) InstanceSummary {
+	diffStats := DiffStats{}
+	if instance.Started() && !instance.Paused() {
+		// Try to get diff stats if available
+		stats := instance.GetDiffStats()
+		if stats != nil {
+			diffStats.Added = stats.Added
+			diffStats.Removed = stats.Removed
+		}
+	}
+	
+	return InstanceSummary{
+		Title:     instance.Title,
+		Status:    string(instance.Status),
+		Path:      instance.Path,
+		CreatedAt: instance.CreatedAt,
+		UpdatedAt: instance.UpdatedAt,
+		Program:   instance.Program,
+		InPlace:   instance.InPlace,
+		DiffStats: diffStats,
+	}
+}
+
+// ANSI conversion functions (to be implemented)
+func convertAnsiToHtml(content string) string {
+	// TODO: Implement ANSI to HTML conversion
+	// This would use a library like ansi-to-html
+	return content
+}
+
+func stripAnsi(content string) string {
+	// Simple ANSI escape code stripper
+	// This is a basic implementation - a more robust version would use regex
+	var result strings.Builder
+	inEscape := false
+	
+	for _, c := range content {
+		if inEscape {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				inEscape = false
+			}
+		} else if c == '\x1b' {
+			inEscape = true
+		} else {
+			result.WriteRune(c)
+		}
+	}
+	
+	return result.String()
+}

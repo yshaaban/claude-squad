@@ -56,6 +56,8 @@ Flags:
   -s, --simple           Simple mode: run Claude in current directory (no worktree) with auto-yes enabled and immediate prompt
   -h, --help             help for claude-squad
   -p, --program string   Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
+      --web              Enable web monitoring server
+      --web-port int     Web monitoring server port (default from config)
 ```
 
 Run the application with:
@@ -112,6 +114,21 @@ The menu at the bottom of the screen shows available commands:
 3. Opens a prompt dialog immediately to get started
 4. Simplifies the UI for a streamlined experience
 5. No worktree creation or branch isolation (changes directly to your working directory)
+
+#### Web Monitoring Mode
+1. Enables a web server for remote monitoring of Claude instances
+2. Provides a RESTful API for accessing instance data
+3. Includes WebSocket support for real-time terminal output streaming
+4. Visualizes git diffs and instance status
+5. Secure authentication and rate limiting for remote access
+
+Run with web monitoring enabled:
+```bash
+cs --web              # Enable web monitoring on default port (8080)
+cs --web --web-port=9000  # Use a specific port
+```
+
+Access the web UI at `http://localhost:8080/` (or your configured port)
 
 ### License
 

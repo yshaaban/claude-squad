@@ -17,12 +17,14 @@ import (
 )
 
 var (
-	version           = "1.0.0"
-	programFlag       string
-	autoYesFlag       bool
-	daemonFlag        bool
-	simpleModeFlag    bool
-	fileLoggingFlag   bool
+	version               = "1.0.0"
+	programFlag           string
+	autoYesFlag           bool
+	daemonFlag            bool
+	simpleModeFlag        bool
+	fileLoggingFlag       bool
+	webMonitoringFlag     bool
+	webMonitoringPortFlag int
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - A terminal-based session manager",
@@ -78,7 +80,16 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, program, autoYes, simpleModeFlag)
+			// Create start options
+			startOptions := app.StartOptions{
+				Program:          program,
+				AutoYes:          autoYes,
+				SimpleMode:       simpleModeFlag,
+				WebServerEnabled: webMonitoringFlag,
+				WebServerPort:    webMonitoringPortFlag,
+			}
+
+			return app.Run(ctx, startOptions)
 		},
 	}
 
@@ -156,6 +167,10 @@ func init() {
 		"Run Claude in the current repository directory (no worktree) with auto-yes enabled")
 	rootCmd.Flags().BoolVar(&fileLoggingFlag, "log-to-file", false,
 		"Enable logging to a file (for debugging)")
+	rootCmd.Flags().BoolVar(&webMonitoringFlag, "web", false,
+		"Enable web monitoring server")
+	rootCmd.Flags().IntVar(&webMonitoringPortFlag, "web-port", 0,
+		"Web monitoring server port (default from config)")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
 

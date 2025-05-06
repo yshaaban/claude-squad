@@ -27,14 +27,40 @@ type Config struct {
 	AutoYes bool `json:"auto_yes"`
 	// DaemonPollInterval is the interval (ms) at which the daemon polls sessions for autoyes mode.
 	DaemonPollInterval int `json:"daemon_poll_interval"`
+	
+	// Web Server Configuration
+	WebServerEnabled     bool   `json:"web_server_enabled"`
+	WebServerPort        int    `json:"web_server_port"`
+	WebServerHost        string `json:"web_server_host"`
+	WebServerAuthToken   string `json:"web_server_auth_token"`
+	WebServerAllowLocalhost bool `json:"web_server_allow_localhost"`
+	WebServerUseTLS      bool   `json:"web_server_use_tls"`
+	WebServerTLSCert     string `json:"web_server_tls_cert"`
+	WebServerTLSKey      string `json:"web_server_tls_key"`
+	WebServerCorsOrigin  string `json:"web_server_cors_origin"`
 }
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
+	// Generate a simple default auth token
+	// In production, a more secure token would be generated
+	defaultToken := "claude-squad-monitoring-token"
+	
 	return &Config{
 		DefaultProgram:     "claude",
 		AutoYes:            false,
 		DaemonPollInterval: 1000,
+		
+		// Web Server defaults
+		WebServerEnabled:      false,
+		WebServerPort:         8080,
+		WebServerHost:         "127.0.0.1",
+		WebServerAuthToken:    defaultToken,
+		WebServerAllowLocalhost: true,
+		WebServerUseTLS:       false,
+		WebServerTLSCert:      "",
+		WebServerTLSKey:       "",
+		WebServerCorsOrigin:   "http://localhost:3000",
 	}
 }
 

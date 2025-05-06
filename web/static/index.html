@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Squad Monitor</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/xterm.min.css">
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .terminal-container {
+            background: #000;
+            border-radius: 5px;
+            padding: 10px;
+            height: 500px;
+        }
+        .instance-list {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .instance-item {
+            cursor: pointer;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        .instance-item:hover {
+            background-color: #f0f0f0;
+        }
+        .instance-item.active {
+            background-color: #e0e0e0;
+        }
+        .status-running {
+            color: green;
+        }
+        .status-paused {
+            color: orange;
+        }
+        .diff-container {
+            height: 500px;
+            overflow-y: auto;
+            font-family: monospace;
+            background: #fff;
+            border-radius: 5px;
+            padding: 10px;
+        }
+        .diff-line-add {
+            background-color: #e6ffed;
+            color: #22863a;
+        }
+        .diff-line-remove {
+            background-color: #ffeef0;
+            color: #cb2431;
+        }
+        .stats-container {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            padding: 15px;
+            border-radius: 5px;
+            background: white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            flex-grow: 1;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <h1 class="mb-4">Claude Squad Monitor</h1>
+        
+        <div class="stats-container">
+            <div class="stat-card">
+                <h5>Active Instances</h5>
+                <h3 id="active-instances">0</h3>
+            </div>
+            <div class="stat-card">
+                <h5>Total Changes</h5>
+                <h3 id="total-changes">0</h3>
+            </div>
+            <div class="stat-card">
+                <h5>Uptime</h5>
+                <h3 id="uptime">0:00:00</h3>
+            </div>
+        </div>
+        
+        <div class="row">
+            <div class="col-md-3">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Instances</h5>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="auto-refresh">
+                            <label class="form-check-label" for="auto-refresh">Auto Refresh</label>
+                        </div>
+                    </div>
+                    <div class="card-body instance-list" id="instance-list">
+                        <!-- Instance list will be populated here -->
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-9">
+                <ul class="nav nav-tabs" id="myTab" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="terminal-tab" data-bs-toggle="tab" data-bs-target="#terminal" type="button" role="tab">Terminal</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="diff-tab" data-bs-toggle="tab" data-bs-target="#diff" type="button" role="tab">Changes</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="info-tab" data-bs-toggle="tab" data-bs-target="#info" type="button" role="tab">Info</button>
+                    </li>
+                </ul>
+                
+                <div class="tab-content p-3 bg-white" id="myTabContent">
+                    <div class="tab-pane fade show active" id="terminal" role="tabpanel">
+                        <div class="terminal-container" id="terminal-container"></div>
+                    </div>
+                    <div class="tab-pane fade" id="diff" role="tabpanel">
+                        <div class="diff-container" id="diff-container">
+                            <p class="text-center">Select an instance to view changes</p>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="info" role="tabpanel">
+                        <div class="card">
+                            <div class="card-body" id="info-container">
+                                <p class="text-center">Select an instance to view information</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/3.14.5/xterm.min.js"></script>
+    <script>
+        let currentInstance = null;
+        let terminal = null;
+        let websocket = null;
+        let autoRefresh = false;
+        let refreshInterval = null;
+        
+        // Initialize terminal
+        function initTerminal() {
+            if (terminal) return;
+            
+            terminal = new Terminal({
+                cursorBlink: false,
+                fontSize: 14,
+                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                theme: {
+                    background: '#000',
+                    foreground: '#fff'
+                }
+            });
+            
+            terminal.open(document.getElementById('terminal-container'));
+        }
+        
+        // Connect to instance WebSocket
+        function connectWebSocket(instanceTitle) {
+            if (websocket) {
+                websocket.close();
+                websocket = null;
+            }
+            
+            if (!instanceTitle) return;
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/terminal/${instanceTitle}?format=ansi`;
+            
+            websocket = new WebSocket(wsUrl);
+            
+            websocket.onopen = function() {
+                console.log('WebSocket connected');
+            };
+            
+            websocket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                terminal.reset();
+                terminal.write(data.content);
+            };
+            
+            websocket.onclose = function() {
+                console.log('WebSocket disconnected');
+            };
+            
+            websocket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        // Load instances
+        function loadInstances() {
+            fetch('/api/instances')
+                .then(response => response.json())
+                .then(data => {
+                    const instanceList = document.getElementById('instance-list');
+                    instanceList.innerHTML = '';
+                    
+                    let activeCount = 0;
+                    let totalChanges = 0;
+                    
+                    if (data.instances.length === 0) {
+                        instanceList.innerHTML = '<p class="text-center">No instances found</p>';
+                        return;
+                    }
+                    
+                    data.instances.forEach(instance => {
+                        if (instance.status === 'running') {
+                            activeCount++;
+                        }
+                        
+                        if (instance.diff_stats) {
+                            totalChanges += (instance.diff_stats.added + instance.diff_stats.removed);
+                        }
+                        
+                        const div = document.createElement('div');
+                        div.className = `instance-item ${instance.title === currentInstance ? 'active' : ''}`;
+                        div.setAttribute('data-title', instance.title);
+                        
+                        let statusClass = '';
+                        if (instance.status === 'running') statusClass = 'status-running';
+                        if (instance.status === 'paused') statusClass = 'status-paused';
+                        
+                        div.innerHTML = `
+                            <div class="d-flex justify-content-between align-items-center">
+                                <strong>${instance.title}</strong>
+                                <span class="${statusClass}">${instance.status}</span>
+                            </div>
+                            <small class="text-muted">${instance.path}</small>
+                        `;
+                        
+                        div.addEventListener('click', () => {
+                            document.querySelectorAll('.instance-item').forEach(item => {
+                                item.classList.remove('active');
+                            });
+                            div.classList.add('active');
+                            currentInstance = instance.title;
+                            loadInstanceDetails(instance.title);
+                        });
+                        
+                        instanceList.appendChild(div);
+                    });
+                    
+                    // Update stats
+                    document.getElementById('active-instances').textContent = activeCount;
+                    document.getElementById('total-changes').textContent = totalChanges;
+                    
+                    // Select the first instance if none is selected
+                    if (!currentInstance && data.instances.length > 0) {
+                        const firstItem = instanceList.querySelector('.instance-item');
+                        firstItem.click();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading instances:', error);
+                });
+        }
+        
+        // Load instance details
+        function loadInstanceDetails(instanceTitle) {
+            initTerminal();
+            connectWebSocket(instanceTitle);
+            
+            // Load instance info
+            fetch(`/api/instances/${instanceTitle}`)
+                .then(response => response.json())
+                .then(data => {
+                    const infoContainer = document.getElementById('info-container');
+                    
+                    const createdDate = new Date(data.created_at);
+                    const updatedDate = new Date(data.updated_at);
+                    
+                    infoContainer.innerHTML = `
+                        <h4>${data.title}</h4>
+                        <table class="table">
+                            <tr>
+                                <th>Status</th>
+                                <td>${data.status}</td>
+                            </tr>
+                            <tr>
+                                <th>Path</th>
+                                <td>${data.path}</td>
+                            </tr>
+                            <tr>
+                                <th>Program</th>
+                                <td>${data.program}</td>
+                            </tr>
+                            <tr>
+                                <th>Created</th>
+                                <td>${createdDate.toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <th>Last Updated</th>
+                                <td>${updatedDate.toLocaleString()}</td>
+                            </tr>
+                            <tr>
+                                <th>In-Place</th>
+                                <td>${data.in_place ? 'Yes' : 'No'}</td>
+                            </tr>
+                        </table>
+                    `;
+                })
+                .catch(error => {
+                    console.error('Error loading instance details:', error);
+                });
+            
+            // Load diff
+            loadDiff(instanceTitle);
+        }
+        
+        // Load diff
+        function loadDiff(instanceTitle) {
+            fetch(`/api/instances/${instanceTitle}/diff?format=parsed`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const diffContainer = document.getElementById('diff-container');
+                    
+                    if (!data.files || data.files.length === 0) {
+                        diffContainer.innerHTML = '<p class="text-center">No changes detected</p>';
+                        return;
+                    }
+                    
+                    let diffHtml = `
+                        <div class="d-flex justify-content-between mb-3">
+                            <h5>Changes</h5>
+                            <div>
+                                <span class="badge bg-success">+${data.added}</span>
+                                <span class="badge bg-danger">-${data.removed}</span>
+                            </div>
+                        </div>
+                    `;
+                    
+                    data.files.forEach(file => {
+                        diffHtml += `
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <strong>${file.path}</strong>
+                                    <div>
+                                        <span class="badge bg-success">+${file.added}</span>
+                                        <span class="badge bg-danger">-${file.removed}</span>
+                                    </div>
+                                </div>
+                                <div class="card-body p-0">
+                                    <pre class="m-0 p-2">`;
+                        
+                        file.hunks.forEach(hunk => {
+                            diffHtml += `<div class="hunk-header text-muted">${hunk.header}</div>`;
+                            
+                            hunk.changes.forEach(change => {
+                                let changeClass = '';
+                                let prefix = ' ';
+                                
+                                if (change.type === 'add') {
+                                    changeClass = 'diff-line-add';
+                                    prefix = '+';
+                                } else if (change.type === 'remove') {
+                                    changeClass = 'diff-line-remove';
+                                    prefix = '-';
+                                }
+                                
+                                diffHtml += `<div class="${changeClass}">${prefix}${change.content}</div>`;
+                            });
+                        });
+                        
+                        diffHtml += `</pre>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    diffContainer.innerHTML = diffHtml;
+                })
+                .catch(error => {
+                    console.error('Error loading diff:', error);
+                    document.getElementById('diff-container').innerHTML = 
+                        '<p class="text-center">Unable to load changes</p>';
+                });
+        }
+        
+        // Update uptime
+        function updateUptime() {
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('uptime').textContent = data.uptime;
+                })
+                .catch(error => {
+                    console.error('Error updating uptime:', error);
+                });
+        }
+        
+        // Event listeners
+        document.getElementById('auto-refresh').addEventListener('change', function(e) {
+            autoRefresh = e.target.checked;
+            
+            if (autoRefresh) {
+                refreshInterval = setInterval(() => {
+                    loadInstances();
+                    updateUptime();
+                    if (currentInstance) {
+                        loadDiff(currentInstance);
+                    }
+                }, 5000);
+            } else if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        });
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            initTerminal();
+            loadInstances();
+            updateUptime();
+            
+            // Manual refresh button
+            document.getElementById('auto-refresh').checked = true;
+            document.getElementById('auto-refresh').dispatchEvent(new Event('change'));
+        });
+    </script>
+</body>
+</html>

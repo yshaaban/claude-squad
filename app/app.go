@@ -7,6 +7,7 @@ import (
 	"claude-squad/session"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
+	"claude-squad/web"
 	"context"
 	"fmt"
 	"os"
@@ -22,9 +23,9 @@ import (
 const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool, simpleMode bool) error {
+func Run(ctx context.Context, startOptions StartOptions) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes, simpleMode),
+		newHome(ctx, startOptions),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -65,6 +66,9 @@ type home struct {
 	appConfig *config.Config
 	// appState stores persistent application state like seen help screens
 	appState config.AppState
+	
+	// webServer holds the monitoring web server instance
+	webServer *web.Server
 
 	// state
 	state state
@@ -85,7 +89,7 @@ type home struct {
 	keySent bool
 }
 
-func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool) *home {
+func newHome(ctx context.Context, startOptions StartOptions) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
 
@@ -104,6 +108,15 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 		}
 	}
 
+	// Apply command line overrides to config
+	if startOptions.WebServerEnabled {
+		appConfig.WebServerEnabled = true
+	}
+	
+	if startOptions.WebServerPort > 0 {
+		appConfig.WebServerPort = startOptions.WebServerPort
+	}
+
 	h := &home{
 		ctx:          ctx,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
@@ -112,16 +125,16 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 		errBox:       ui.NewErrBox(),
 		storage:      storage,
 		appConfig:    appConfig,
-		program:      program,
-		autoYes:      autoYes,
-		simpleMode:   simpleMode,
+		program:      startOptions.Program,
+		autoYes:      startOptions.AutoYes,
+		simpleMode:   startOptions.SimpleMode,
 		state:        stateDefault,
 		appState:     appState,
 	}
-	h.list = ui.NewList(&h.spinner, autoYes)
+	h.list = ui.NewList(&h.spinner, startOptions.AutoYes)
 
 	// Check if we're in simple mode
-	if simpleMode {
+	if startOptions.SimpleMode {
 		// Create a new instance to run in the current directory
 		currentDir, err := os.Getwd()
 		if err != nil {
@@ -145,7 +158,7 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 						// Add the existing instances to the list
 						for _, existingInstance := range instances {
 							h.list.AddInstance(existingInstance)()
-							if autoYes {
+							if startOptions.AutoYes {
 								existingInstance.AutoYes = true
 							}
 						}
@@ -174,7 +187,7 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:     instanceName,
 			Path:      currentDir,
-			Program:   program,
+			Program:   startOptions.Program,
 			AutoYes:   true,
 			InPlace:   true,
 		})
@@ -213,9 +226,16 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 		for _, instance := range instances {
 			// Call the finalizer immediately.
 			h.list.AddInstance(instance)()
-			if autoYes {
+			if startOptions.AutoYes {
 				instance.AutoYes = true
 			}
+		}
+	}
+	
+	// Start web server if enabled
+	if appConfig.WebServerEnabled {
+		if err := h.StartWebServer(); err != nil {
+			h.errBox.SetError(fmt.Errorf("Failed to start web server: %w", err))
 		}
 	}
 
@@ -362,6 +382,9 @@ func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	
+	// Shutdown web server if running
+	m.StopWebServer()
 	
 	// Quit the application
 	return m, tea.Quit
