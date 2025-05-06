@@ -95,8 +95,13 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 	// Initialize storage
 	storage, err := session.NewStorage(appState)
 	if err != nil {
-		fmt.Printf("Failed to initialize storage: %v\n", err)
-		os.Exit(1)
+		// Return a properly error-handled home object
+		errBox := ui.NewErrBox()
+		errBox.SetError(fmt.Errorf("Failed to initialize storage: %w", err))
+		return &home{
+			errBox: errBox,
+			ctx:    ctx,
+		}
 	}
 
 	h := &home{
@@ -129,19 +134,35 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 		// Check for existing simple mode instances in this directory
 		instances, err := storage.LoadInstances()
 		if err == nil {
+			var staleInstances []string
+			
 			for _, instance := range instances {
 				if instance.InPlace && filepath.Clean(instance.Path) == filepath.Clean(currentDir) {
-					h.errBox.SetError(fmt.Errorf("A Simple Mode instance already exists for this directory. Please use that instance or run in a different directory."))
-					
-					// Add the existing instances to the list
-					for _, existingInstance := range instances {
-						h.list.AddInstance(existingInstance)()
-						if autoYes {
-							existingInstance.AutoYes = true
+					// Check if the instance's tmux session actually exists
+					if instance.Started() && instance.TmuxAlive() {
+						h.errBox.SetError(fmt.Errorf("A Simple Mode instance already exists for this directory. Please use that instance or run in a different directory."))
+						
+						// Add the existing instances to the list
+						for _, existingInstance := range instances {
+							h.list.AddInstance(existingInstance)()
+							if autoYes {
+								existingInstance.AutoYes = true
+							}
 						}
+						
+						return h
+					} else {
+						// This is a stale Simple Mode instance, mark it for removal
+						staleInstances = append(staleInstances, instance.Title)
 					}
-					
-					return h
+				}
+			}
+			
+			// Remove any stale Simple Mode instances for this directory
+			for _, title := range staleInstances {
+				log.InfoLog.Printf("Removing stale Simple Mode instance: %s", title)
+				if err := storage.DeleteInstance(title); err != nil {
+					log.ErrorLog.Printf("Error removing stale Simple Mode instance: %v", err)
 				}
 			}
 		}
@@ -183,8 +204,9 @@ func newHome(ctx context.Context, program string, autoYes bool, simpleMode bool)
 		// Standard mode - load saved instances
 		instances, err := storage.LoadInstances()
 		if err != nil {
-			fmt.Printf("Failed to load instances: %v\n", err)
-			os.Exit(1)
+			// Use the proper error handling mechanism
+			h.errBox.SetError(fmt.Errorf("Failed to load instances: %w", err))
+			return h
 		}
 
 		// Add loaded instances to the list
@@ -315,9 +337,33 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
+	// Save instances before quitting
 	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 		return m, m.handleError(err)
 	}
+	
+	// When in Simple Mode, we only want to kill that specific Claude instance
+	// and remove it from storage so it doesn't appear in future sessions
+	if m.simpleMode {
+		selected := m.list.GetSelectedInstance()
+		if selected != nil && selected.Started() && !selected.Paused() && selected.InPlace {
+			log.InfoLog.Printf("Terminating Simple Mode instance: %s", selected.Title)
+			
+			// Kill the instance
+			if err := selected.Kill(); err != nil {
+				log.ErrorLog.Printf("Error terminating instance %s: %v", selected.Title, err)
+			}
+			
+			// Remove it from storage as well
+			if err := m.storage.DeleteInstance(selected.Title); err != nil {
+				log.ErrorLog.Printf("Error removing Simple Mode instance from storage: %v", err)
+			} else {
+				log.InfoLog.Printf("Removed Simple Mode instance %s from storage", selected.Title)
+			}
+		}
+	}
+	
+	// Quit the application
 	return m, tea.Quit
 }
 

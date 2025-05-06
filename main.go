@@ -17,16 +17,23 @@ import (
 )
 
 var (
-	version        = "1.0.0"
-	programFlag    string
-	autoYesFlag    bool
-	daemonFlag     bool
-	simpleModeFlag bool
+	version           = "1.0.0"
+	programFlag       string
+	autoYesFlag       bool
+	daemonFlag        bool
+	simpleModeFlag    bool
+	fileLoggingFlag   bool
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - A terminal-based session manager",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
+			
+			// Enable file logging if requested
+			if fileLoggingFlag {
+				log.EnableFileLogging()
+			}
+			
 			log.Initialize(daemonFlag)
 			defer log.Close()
 
@@ -147,6 +154,8 @@ func init() {
 		"[experimental] If enabled, all instances will automatically accept prompts")
 	rootCmd.Flags().BoolVarP(&simpleModeFlag, "simple", "s", false,
 		"Run Claude in the current repository directory (no worktree) with auto-yes enabled")
+	rootCmd.Flags().BoolVar(&fileLoggingFlag, "log-to-file", false,
+		"Enable logging to a file (for debugging)")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
 

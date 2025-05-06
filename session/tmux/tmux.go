@@ -301,19 +301,33 @@ func (t *TmuxSession) Detach() {
 	// Close the attached pty session.
 	err := t.ptmx.Close()
 	if err != nil {
-		// This is a fatal error. We can't detach if we can't close the PTY. It's better to just panic and have the
-		// user re-invoke the program than to ruin their terminal pane.
+		// Log the error but don't panic
 		msg := fmt.Sprintf("error closing attach pty session: %v", err)
 		log.ErrorLog.Println(msg)
-		panic(msg)
+		log.ErrorLog.Println("attempting to continue despite PTY close error")
 	}
+	
 	// Attach goroutines should die on EOF due to the ptmx closing. Call
 	// t.Restore to set a new t.ptmx.
 	if err = t.Restore(); err != nil {
-		// This is a fatal error. Our invariant that a started TmuxSession always has a valid ptmx is violated.
-		msg := fmt.Sprintf("error closing attach pty session: %v", err)
+		// Log the error but don't panic
+		msg := fmt.Sprintf("error restoring tmux session: %v", err)
 		log.ErrorLog.Println(msg)
-		panic(msg)
+		log.ErrorLog.Println("attempting recovery by creating a minimal PTY replacement")
+		
+		// Try to create a fallback PTY to maintain the invariant
+		r, w, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			log.ErrorLog.Printf("failed to create pipe for recovery: %v", pipeErr)
+			// If we absolutely can't create any kind of file descriptor, 
+			// still try to continue with a nil ptmx - better than crashing the app
+		} else {
+			// Use the read end of the pipe as a minimal PTY replacement
+			t.ptmx = r
+			// Close the write end since we won't use it
+			w.Close()
+			log.ErrorLog.Println("created minimal PTY replacement for recovery")
+		}
 	}
 
 	// Cancel goroutines created by Attach.

@@ -16,8 +16,11 @@ import (
 func (t *TmuxSession) monitorWindowSize() {
 	winchChan := make(chan os.Signal, 1)
 	signal.Notify(winchChan, syscall.SIGWINCH)
-	// Send initial SIGWINCH to trigger the first resize
-	_ = syscall.Kill(syscall.Getpid(), syscall.SIGWINCH)
+	// Send initial SIGWINCH to trigger the first resize - wrap with error checking
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGWINCH); err != nil {
+		log.ErrorLog.Printf("Failed to send SIGWINCH signal: %v", err)
+		// Continue execution - this isn't fatal
+	}
 
 	everyN := log.NewEvery(60 * time.Second)
 
