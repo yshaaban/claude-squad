@@ -1,197 +1,66 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides critical guidance for working with the Claude Squad codebase.
 
-## Project Overview
+## CRITICAL GUIDELINES
 
-Claude Squad is a terminal application that manages multiple AI coding assistant instances (Claude Code, OpenAI Codex, Aider, etc.) in separate workspaces. It provides a terminal-based UI for creating, managing, and switching between multiple AI assistant sessions while keeping their work isolated.
+### Terminal Integration (HIGH RISK)
 
-## Important Development Guidelines
+1. **NEVER USE PANICS**: Panics leave the terminal in a corrupted state. Always use error returns instead.
 
-### Error Handling
+2. **NO OS.EXIT() CALLS**: Never directly call os.Exit() in library functions. Return errors to the caller.
 
-1. **Avoid Using Panics**: Never use panics in production code. Instead, return errors and handle them appropriately. Panics can leave the terminal in an inconsistent state.
+3. **PTY HANDLING**: The pty library integration is fragile. Always handle errors gracefully for terminal operations.
 
-2. **Don't Use os.Exit()**: Avoid direct calls to os.Exit() in libraries or application code. Return errors instead and let the main function decide how to handle application termination.
+4. **TMUX SESSION MANAGEMENT**: Always clean up tmux sessions properly. Detached tmux sessions consume resources.
 
-3. **Graceful Recovery**: Add recovery mechanisms for operations that might fail, especially when dealing with external systems like tmux.
+### Process Management
 
-4. **Signal Handling**: Always check return values from syscall operations and handle potential errors gracefully.
+1. **CLEANUP ON EXIT**: In Simple Mode, kill Claude processes when the app exits. Call proper cleanup in handleQuit().
 
-5. **Resource Cleanup**: Always ensure proper resource cleanup (file handles, processes) even when errors occur.
+2. **STORAGE PURGING**: Remove Simple Mode instances from storage when terminated or app will show stale instances.
+
+3. **PROPER SIGNAL HANDLING**: Always check returns from syscalls, especially SIGWINCH in tmux code.
 
 ### Cross-Directory Compatibility
 
-1. **Absolute Paths**: Always use absolute paths when working with files and directories to ensure compatibility when running from different directories.
+1. **ABSOLUTE PATHS**: Always use absolute path resolution. Application can be run from any directory.
 
-2. **Git Repository Detection**: Use robust git repository detection that handles edge cases when running from subdirectories.
+2. **GIT REPO DETECTION**: Git repo detection must traverse up directories to find .git. Never assume current dir.
 
-### Simple Mode Considerations
+### Logging Guidelines
 
-1. **Process Termination**: Ensure all processes (like Claude) are properly terminated when the application exits, especially in Simple Mode.
+1. **NO DEFAULT FILE LOGGING**: Logging to files is disabled by default. Use --log-to-file only for debugging.
 
-2. **Storage Cleanup**: Remove Simple Mode instances from storage when they're terminated to prevent stale entries.
-
-3. **Stale Instance Detection**: Check for and clean up stale Simple Mode instances before creating new ones.
-
-### Logging Best Practices
-
-1. **Avoid File Logging by Default**: Don't write logs to files by default; use stdout/stderr instead to avoid cluttering the filesystem.
-
-2. **Optional File Logging**: Provide an opt-in mechanism for file logging when needed for debugging.
-
-3. **Multi-writer Logging**: When writing logs to a file, also send them to stdout/stderr to maintain visibility.
-
-## Build, Test, and Run Commands
-
-### Building
+## Key Commands
 
 ```bash
-# Download dependencies
-go mod download
-
-# Build the project
-go build
-```
-
-### Testing
-
-```bash
-# Run all tests
-go test ./...
-
-# Run tests for a specific package
-go test ./session/git
-```
-
-### Running
-
-```bash
-# Run the application
-go run main.go
-
-# Run with auto-accept mode
-go run main.go -y
-
-# Run with a specific program
-go run main.go -p "aider"
-
-# Run in simple mode (current directory, auto-yes, immediate prompt)
-go run main.go -s
-
-# Enable file logging (for debugging)
-go run main.go --log-to-file
-```
-
-### Installing
-
-```bash
-# Install from source
+# Build and install
 go build -o ~/.local/bin/cs
 
-# Install using the installation script
-./install.sh
+# Run with Simple Mode (recommended for direct use)
+cs -s
+
+# Run with file logging for debugging
+cs --log-to-file
 ```
 
-## Architecture
+## Critical Code Locations
 
-### Core Components
+1. **Process Termination**: `/app/app.go:handleQuit()` - Ensures Claude processes are killed on exit
 
-1. **Main Package**
-   - Entry point with Cobra CLI commands
-   - Handles command line flags and initialization
+2. **PTY Handling**: `/session/tmux/tmux.go:Detach()` - Fragile terminal state handling
 
-2. **App Package**
-   - Core application logic
-   - UI rendering and event handling
-   - State management
+3. **Simple Mode Storage**: `/app/app.go:newHome()` - Handles stale instance detection and cleanup
 
-3. **Session Package**
-   - Manages AI assistant instances
-   - `Instance` struct represents a running AI assistant
-   - Handles instance lifecycle (create, start, pause, resume, kill)
-   - Sub-packages:
-     - `git`: Manages isolated git worktrees
-     - `tmux`: Manages terminal sessions
+4. **Error Handling**: `/session/tmux/tmux_unix.go` - Critical signal handling for SIGWINCH
 
-4. **UI Package**
-   - Bubble Tea/Lip Gloss UI components
-   - List view for instances
-   - Tabbed window with preview and diff panes
-   - Menu bar and error box
+## Dangerous Areas to Modify
 
-5. **Config Package**
-   - Application configuration and state management
-   - Default config includes program choice and auto-yes mode
+1. **Terminal State**: Any code that directly interfaces with the terminal (pty, tmux)
 
-### Workflow
+2. **Process Management**: Code that starts/stops Claude processes, especially in Simple Mode
 
-1. When a new instance is created:
-   - A new git branch is created and a worktree is set up
-   - A tmux session is started in that worktree
-   - The specified program (e.g., Claude Code) is launched
+3. **Path Resolution**: Code that handles file paths or git repository detection
 
-2. When an instance is paused:
-   - Changes are committed
-   - The tmux session is closed
-   - The worktree is removed (branch is preserved)
-
-3. When an instance is resumed:
-   - The worktree is recreated from the branch
-   - A new tmux session is started
-   - The program is relaunched
-
-## Key Interfaces
-
-### Session Management
-
-- `NewInstance(opts InstanceOptions)`: Creates a new AI assistant instance
-- `Instance.Start(firstTimeSetup bool)`: Initializes and starts an instance
-- `Instance.Pause()`: Pauses an instance, preserving its branch
-- `Instance.Resume()`: Resumes a paused instance
-- `Instance.Kill()`: Terminates an instance and cleans up resources
-
-### Git Operations
-
-- `NewGitWorktree(path, sessionName string)`: Creates a new git worktree
-- `GitWorktree.Setup()`: Sets up the worktree
-- `GitWorktree.PushChanges(commitMsg string, push bool)`: Commits and optionally pushes changes
-- `GitWorktree.IsDirty()`: Checks if there are uncommitted changes
-
-### UI Components
-
-- `home` struct in app.go is the main UI model
-- `List`, `TabbedWindow`, `Menu`, `ErrBox` are the primary UI components
-- Uses the Bubble Tea event loop for handling user input and rendering
-
-## Cross-Platform Support
-
-- Platform-specific implementations for Unix/Windows
-- Daemon package handles background processes
-- Uses appropriate path separators and system-specific commands
-- Simple mode works across all platforms
-
-## Common Issues and Solutions
-
-### Process Termination
-
-If Claude processes aren't properly terminated when quitting:
-- Ensure `handleQuit()` in app.go properly kills instances
-- Target only the specific Simple Mode instance to avoid killing unrelated Claude processes
-- Call `instance.Kill()` which will properly terminate the tmux session
-
-### Running from Different Directories
-
-If the application crashes when run from a different directory:
-- Check all path handling to ensure absolute paths are used
-- Add proper error handling instead of panics or `os.Exit()`
-- Add debugging statements to identify where failures occur
-- Ensure robust git repository detection
-
-### Terminal State Issues
-
-If the terminal is left in a bad state:
-- Replace panics with proper error handling, especially in tmux handling
-- Add recovery mechanisms for PTY operations
-- Ensure proper signal handling for SIGWINCH and other signals
-- Add graceful fallbacks when operations fail
+4. **Error Propagation**: Never replace error returns with panics or os.Exit()
