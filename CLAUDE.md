@@ -14,6 +14,8 @@ This file provides critical guidance for working with the Claude Squad codebase.
 
 4. **TMUX SESSION MANAGEMENT**: Always clean up tmux sessions properly. Detached tmux sessions consume resources.
 
+5. **TERMINAL STATE CHANGES**: Be extremely careful with term.SetRaw() or any code that changes terminal state.
+
 ### Process Management
 
 1. **CLEANUP ON EXIT**: In Simple Mode, kill Claude processes when the app exits. Call proper cleanup in handleQuit().
@@ -64,3 +66,15 @@ cs --log-to-file
 3. **Path Resolution**: Code that handles file paths or git repository detection
 
 4. **Error Propagation**: Never replace error returns with panics or os.Exit()
+
+5. **Storage Management**: Code that loads/saves instance data, especially the DeleteInstance() method
+
+## Recovery Procedures
+
+1. **Broken Terminal**: If a terminal is left in a broken state, run `reset` command in that terminal
+
+2. **Zombie Claude Processes**: Use `ps | grep claude` to identify and kill stray Claude processes
+
+3. **Stale Instances**: Run `cs reset` to clean up all instances and tmux sessions when in doubt
+
+4. **Debugging Issues**: Run with `cs --log-to-file` to capture debug info to `/tmp/claudesquad.log`
