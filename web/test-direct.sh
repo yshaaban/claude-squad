@@ -44,9 +44,9 @@ cleanup() {
 # Set up cleanup on script exit
 trap cleanup EXIT INT
 
-# Wait for server to start
-echo -e "${YELLOW}Waiting for server to start...${NC}"
-for i in {1..50}; do
+# Wait for server to start and for a Claude session to be created automatically
+echo -e "${YELLOW}Waiting for server to start and Claude session to initialize...${NC}"
+for i in {1..60}; do
   sleep 1
   echo -n "."
 done

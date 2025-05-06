@@ -13,6 +13,11 @@ var (
 	WarningLog *log.Logger
 	InfoLog    *log.Logger
 	ErrorLog   *log.Logger
+	
+	// Special loggers that only log to file, never to console
+	FileOnlyInfoLog    *log.Logger
+	FileOnlyWarningLog *log.Logger
+	FileOnlyErrorLog   *log.Logger
 )
 
 var logFileName = filepath.Join(os.TempDir(), "claudesquad.log")
@@ -30,38 +35,43 @@ func EnableFileLogging() {
 // By default, logs only go to stdout/stderr. Set enableFileLogging to true to also write to a file.
 
 func Initialize(daemon bool) {
-	// Create default loggers to stdout/stderr
 	prefix := ""
 	if daemon {
 		prefix = "[DAEMON] "
 	}
 	
+	// Always set up console logging for terminal UI
 	InfoLog = log.New(os.Stdout, prefix+"INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
 	WarningLog = log.New(os.Stderr, prefix+"WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
 	ErrorLog = log.New(os.Stderr, prefix+"ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+	
+	// Set up file-only loggers to discard initially
+	FileOnlyInfoLog = log.New(io.Discard, "", 0)
+	FileOnlyWarningLog = log.New(io.Discard, "", 0)
+	FileOnlyErrorLog = log.New(io.Discard, "", 0)
 
-	// Skip file logging unless explicitly enabled
 	if !enableFileLogging {
 		return
 	}
-
-	// Try to open the log file
+	
+	// If file logging is enabled, set up file loggers
 	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		WarningLog.Printf("Could not open log file: %s (using stderr instead)", err)
 		return
 	}
 
-	// Set up multi-writer to log to both file and stdout/stderr
-	infoWriter := io.MultiWriter(os.Stdout, f)
-	warnWriter := io.MultiWriter(os.Stderr, f)
-	errorWriter := io.MultiWriter(os.Stderr, f)
+	// Set up the file-only loggers that will never log to stdout/stderr
+	// These are used for web server messages that should never appear in the terminal
+	FileOnlyInfoLog = log.New(f, prefix+"WEB-INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	FileOnlyWarningLog = log.New(f, prefix+"WEB-WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	FileOnlyErrorLog = log.New(f, prefix+"WEB-ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 
-	// Set log format to include timestamp and file/line number
-	InfoLog = log.New(infoWriter, prefix+"INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
-	WarningLog = log.New(warnWriter, prefix+"WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
-	ErrorLog = log.New(errorWriter, prefix+"ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
-
+	// Always log to both console and file for terminal UI
+	InfoLog = log.New(io.MultiWriter(os.Stdout, f), prefix+"INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
+	WarningLog = log.New(io.MultiWriter(os.Stderr, f), prefix+"WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
+	ErrorLog = log.New(io.MultiWriter(os.Stderr, f), prefix+"ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
+	
 	globalLogFile = f
 }
 
@@ -69,10 +79,10 @@ func Close() {
 	if globalLogFile != nil {
 		_ = globalLogFile.Close()
 		
-		// Only print the log file location if file logging is enabled
-		if enableFileLogging {
-			fmt.Println("wrote logs to " + logFileName)
-		}
+		// Print log file location when exiting the app
+		// This helps users find logs, but only shows at the very end
+		// to avoid interfering with terminal UI during operation
+		fmt.Printf("\nLogs written to: %s\n", logFileName)
 	}
 }
 

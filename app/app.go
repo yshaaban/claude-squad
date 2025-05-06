@@ -209,10 +209,25 @@ func newHome(ctx context.Context, startOptions StartOptions) *home {
 		h.list.SetSelectedInstance(0)
 		instance.AutoYes = true
 
-		// Immediately open prompt dialog
-		h.state = statePrompt
-		h.menu.SetState(ui.StatePrompt)
-		h.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
+		// If web server is enabled in simple mode, automatically send an empty prompt
+		// to create a Claude session immediately rather than showing the prompt dialog
+		if startOptions.WebServerEnabled {
+			log.InfoLog.Printf("Web server enabled in Simple Mode - sending empty prompt to start Claude session automatically")
+			
+			// Send an empty prompt to create the Claude session
+			if err := instance.SendPrompt(""); err != nil {
+				h.errBox.SetError(fmt.Errorf("Failed to send empty prompt: %w", err))
+			}
+			
+			// Stay in default state since we've already sent the prompt
+			h.state = stateDefault
+			h.menu.SetState(ui.StateDefault)
+		} else {
+			// Standard simple mode behavior - show prompt dialog
+			h.state = statePrompt
+			h.menu.SetState(ui.StatePrompt)
+			h.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
+		}
 	} else {
 		// Standard mode - load saved instances
 		instances, err := storage.LoadInstances()

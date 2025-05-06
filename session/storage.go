@@ -18,6 +18,8 @@ type InstanceData struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	AutoYes   bool      `json:"auto_yes"`
+	NoTTY     bool      `json:"no_tty"`
+	InPlace   bool      `json:"in_place"`
 
 	Program   string          `json:"program"`
 	Worktree  GitWorktreeData `json:"worktree"`

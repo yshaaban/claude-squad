@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -257,30 +258,26 @@ func instanceToSummary(instance *session.Instance) InstanceSummary {
 	}
 }
 
-// ANSI conversion functions (to be implemented)
+// ANSI conversion function
 func convertAnsiToHtml(content string) string {
-	// TODO: Implement ANSI to HTML conversion
-	// This would use a library like ansi-to-html
-	return content
+	// Replace special HTML characters
+	content = strings.ReplaceAll(content, "&", "&amp;")
+	content = strings.ReplaceAll(content, "<", "&lt;")
+	content = strings.ReplaceAll(content, ">", "&gt;")
+	
+	// Replace newlines with <br>
+	content = strings.ReplaceAll(content, "\r\n", "<br>")
+	content = strings.ReplaceAll(content, "\n", "<br>")
+	
+	// Replace tabs with spaces
+	content = strings.ReplaceAll(content, "\t", "    ")
+	
+	// Add basic styling
+	return "<pre style=\"white-space: pre-wrap; font-family: monospace;\">" + content + "</pre>"
 }
 
 func stripAnsi(content string) string {
-	// Simple ANSI escape code stripper
-	// This is a basic implementation - a more robust version would use regex
-	var result strings.Builder
-	inEscape := false
-	
-	for _, c := range content {
-		if inEscape {
-			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
-				inEscape = false
-			}
-		} else if c == '\x1b' {
-			inEscape = true
-		} else {
-			result.WriteRune(c)
-		}
-	}
-	
-	return result.String()
+	// ANSI escape code pattern
+	re := regexp.MustCompile(`\x1B\[[0-9;]*[a-zA-Z]`)
+	return re.ReplaceAllString(content, "")
 }

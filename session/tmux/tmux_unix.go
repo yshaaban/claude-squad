@@ -18,7 +18,7 @@ func (t *TmuxSession) monitorWindowSize() {
 	signal.Notify(winchChan, syscall.SIGWINCH)
 	// Send initial SIGWINCH to trigger the first resize - wrap with error checking
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGWINCH); err != nil {
-		log.ErrorLog.Printf("Failed to send SIGWINCH signal: %v", err)
+		log.FileOnlyErrorLog.Printf("Failed to send SIGWINCH signal: %v", err)
 		// Continue execution - this isn't fatal
 	}
 
@@ -29,12 +29,12 @@ func (t *TmuxSession) monitorWindowSize() {
 		cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
 		if err != nil {
 			if everyN.ShouldLog() {
-				log.ErrorLog.Printf("failed to update window size: %v", err)
+				log.FileOnlyErrorLog.Printf("failed to update window size: %v", err)
 			}
 		} else {
 			if err := t.updateWindowSize(cols, rows); err != nil {
 				if everyN.ShouldLog() {
-					log.ErrorLog.Printf("failed to update window size: %v", err)
+					log.FileOnlyErrorLog.Printf("failed to update window size: %v", err)
 				}
 			}
 		}

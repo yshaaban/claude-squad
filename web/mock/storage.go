@@ -2,7 +2,6 @@ package mock
 
 import (
 	"claude-squad/session"
-	"claude-squad/session/git"
 	"fmt"
 	"sync"
 	"time"

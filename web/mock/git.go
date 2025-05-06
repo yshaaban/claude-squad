@@ -120,3 +120,33 @@ func (m *MockWorktree) DoesBranchExist() (bool, error) {
 func (m *MockWorktree) HasRemote() bool {
 	return true
 }
+
+// GetRepoPath returns the repository path.
+func (m *MockWorktree) GetRepoPath() string {
+	return m.path
+}
+
+// GetWorktreePath returns the worktree path.
+func (m *MockWorktree) GetWorktreePath() string {
+	return m.path + "/worktree"
+}
+
+// GetBranchName returns the branch name.
+func (m *MockWorktree) GetBranchName() string {
+	return m.branchName
+}
+
+// GetBaseCommitSHA returns the base commit SHA.
+func (m *MockWorktree) GetBaseCommitSHA() string {
+	return "mock-sha-123456789"
+}
+
+// Setup sets up the worktree.
+func (m *MockWorktree) Setup() error {
+	return nil
+}
+
+// Cleanup cleans up the worktree.
+func (m *MockWorktree) Cleanup() error {
+	return nil
+}

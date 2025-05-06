@@ -79,6 +79,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		UpdatedAt: time.Now(),
 		Program:   i.Program,
 		AutoYes:   i.AutoYes,
+		InPlace:   i.InPlace,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -116,6 +117,8 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		CreatedAt: data.CreatedAt,
 		UpdatedAt: data.UpdatedAt,
 		Program:   data.Program,
+		AutoYes:   data.AutoYes,
+		InPlace:   data.InPlace,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,

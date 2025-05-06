@@ -2,6 +2,7 @@ package ui
 
 import (
 	"claude-squad/keys"
+	"fmt"
 	"strings"
 
 	"claude-squad/session"
@@ -48,6 +49,11 @@ type Menu struct {
 	state         MenuState
 	instance      *session.Instance
 	isInDiffTab   bool
+	
+	// webServerEnabled and webServerPort indicate if the web server is active
+	webServerEnabled bool
+	webServerPort    int
+	webServerHost    string
 
 	// keyDown is the key which is pressed. The default is -1.
 	keyDown keys.KeyName
@@ -59,10 +65,13 @@ var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 
 func NewMenu() *Menu {
 	return &Menu{
-		options:     defaultMenuOptions,
-		state:       StateEmpty,
-		isInDiffTab: false,
-		keyDown:     -1,
+		options:          defaultMenuOptions,
+		state:            StateEmpty,
+		isInDiffTab:      false,
+		webServerEnabled: false,
+		webServerPort:    0,
+		webServerHost:    "",
+		keyDown:          -1,
 	}
 }
 
@@ -98,6 +107,13 @@ func (m *Menu) SetInstance(instance *session.Instance) {
 func (m *Menu) SetInDiffTab(inDiffTab bool) {
 	m.isInDiffTab = inDiffTab
 	m.updateOptions()
+}
+
+// SetWebServerInfo updates the web server status information
+func (m *Menu) SetWebServerInfo(enabled bool, host string, port int) {
+	m.webServerEnabled = enabled
+	m.webServerHost = host
+	m.webServerPort = port
 }
 
 // updateOptions updates the menu options based on current state and instance
@@ -226,6 +242,24 @@ func (m *Menu) String() string {
 		}
 	}
 
-	centeredMenuText := menuStyle.Render(s.String())
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, centeredMenuText)
+	// Get the menu text
+	menuText := s.String()
+	
+	// Add web server info if enabled
+	if m.webServerEnabled && m.webServerPort > 0 {
+		webInfo := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("12")). // Blue color
+			Render(fmt.Sprintf(" Web: http://%s:%d", m.webServerHost, m.webServerPort))
+		
+		// Place the menu text on the left and web info on the right
+		menuText = lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			menuStyle.Render(menuText),
+			webInfo,
+		)
+	} else {
+		menuText = menuStyle.Render(menuText)
+	}
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, menuText)
 }

@@ -12,6 +12,15 @@ import (
 
 // monitorWindowSize monitors and handles window resize events while attached.
 func (t *TmuxSession) monitorWindowSize() {
+	// In noTTY mode, use default size and don't monitor window size
+	if t.noTTY {
+		// Use default size of 80x24 in noTTY mode
+		if err := t.updateWindowSize(80, 24); err != nil {
+			log.ErrorLog.Printf("failed to set default window size in noTTY mode: %v", err)
+		}
+		return
+	}
+
 	// Use the current terminal height and width.
 	doUpdate := func() {
 		cols, rows, err := term.GetSize(int(os.Stdin.Fd()))

@@ -58,9 +58,10 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 	// Create router with middleware
 	router := chi.NewRouter()
 	
-	// Add core middleware
+	// Add core middleware - skip Logger to prevent terminal UI corruption
 	router.Use(chimiddleware.RealIP)
-	router.Use(chimiddleware.Logger)
+	// Logger middleware disabled to prevent terminal UI corruption - use file logging instead
+	// router.Use(chimiddleware.Logger)
 	router.Use(chimiddleware.Recoverer)
 	router.Use(chimiddleware.StripSlashes)
 	
@@ -86,6 +87,9 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 		MaxAge:           300, // Maximum value not ignored by any of major browsers
 	}))
 	
+	// Set up minimal logging for server - only log important events to avoid UI corruption
+	// Info logs about every request would be too noisy and risk terminal UI issues
+	
 	// API routes
 	router.Route("/api", func(r chi.Router) {
 		r.Get("/instances", server.handleInstances)
@@ -99,6 +103,8 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 	
 	// WebSocket route
 	router.Get("/ws/terminal/{name}", server.handleTerminalWebSocket)
+	
+	// Note: Using enhanced websocket handler with additional logging
 	
 	// Static files for web UI
 	router.Handle("/*", static.FileServer())

@@ -31,8 +31,8 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			
-			// Enable file logging if requested
-			if fileLoggingFlag {
+			// Enable file logging if requested or if web monitoring is enabled
+			if fileLoggingFlag || webMonitoringFlag {
 				log.EnableFileLogging()
 			}
 			
@@ -87,6 +87,17 @@ var (
 				SimpleMode:       simpleModeFlag,
 				WebServerEnabled: webMonitoringFlag,
 				WebServerPort:    webMonitoringPortFlag,
+			}
+			
+			// Ensure web server is properly configured with default port if needed
+			if startOptions.WebServerEnabled && startOptions.WebServerPort == 0 {
+				// Use default port from config
+				startOptions.WebServerPort = cfg.WebServerPort
+				
+				// If config has no port defined, use standard default
+				if startOptions.WebServerPort == 0 {
+					startOptions.WebServerPort = 8080
+				}
 			}
 
 			return app.Run(ctx, startOptions)

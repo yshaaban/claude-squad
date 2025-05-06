@@ -81,6 +81,7 @@ func (t *TmuxSession) Start(program string, workDir string) error {
 	// Create a new detached tmux session and start claude in it
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", t.sanitizedName, "-c", workDir, program)
 
+	// Start with standard PTY
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		// Cleanup any partially created session if any exists.
@@ -92,6 +93,7 @@ func (t *TmuxSession) Start(program string, workDir string) error {
 		}
 		return fmt.Errorf("error starting tmux session: %w", err)
 	}
+	t.ptmx = ptmx
 
 	// We need to close the ptmx, but we shouldn't close it before the command above finishes.
 	// So, we poll for completion before closing.
@@ -108,7 +110,9 @@ func (t *TmuxSession) Start(program string, workDir string) error {
 			time.Sleep(time.Millisecond * 10)
 		}
 	}
-	ptmx.Close()
+	
+	// Close the PTY used to start the command
+	t.ptmx.Close()
 
 	err = t.Restore()
 	if err != nil {
@@ -132,11 +136,11 @@ func (t *TmuxSession) Start(program string, workDir string) error {
 			time.Sleep(200 * time.Millisecond)
 			content, err := t.CapturePaneContent()
 			if err != nil {
-				log.ErrorLog.Printf("could not check 'do you trust the files screen': %v", err)
+				log.FileOnlyErrorLog.Printf("could not check 'do you trust the files screen': %v", err)
 			}
 			if strings.Contains(content, searchString) {
 				if err := tapFunc(); err != nil {
-					log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
+					log.FileOnlyErrorLog.Printf("could not tap enter on trust screen: %v", err)
 				}
 				break
 			}
@@ -147,11 +151,19 @@ func (t *TmuxSession) Start(program string, workDir string) error {
 
 // Restore attaches to an existing session and restores the window size
 func (t *TmuxSession) Restore() error {
+	// First verify the session still exists
+	if !DoesSessionExist(t.sanitizedName) {
+		log.ErrorLog.Printf("Tmux session %s doesn't exist during restore", t.sanitizedName)
+		return fmt.Errorf("tmux session %s doesn't exist", t.sanitizedName)
+	}
+	
+	// Normal PTY mode
 	ptmx, err := pty.Start(exec.Command("tmux", "attach-session", "-t", t.sanitizedName))
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
 	}
 	t.ptmx = ptmx
+	
 	t.monitor = newStatusMonitor()
 	return nil
 }
@@ -175,8 +187,17 @@ func (m *statusMonitor) hash(s string) []byte {
 
 // TapEnter sends an enter keystroke to the tmux pane.
 func (t *TmuxSession) TapEnter() error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY not initialized or already closed")
+	}
 	_, err := t.ptmx.Write([]byte{0x0D})
 	if err != nil {
+		if strings.Contains(err.Error(), "bad file descriptor") || 
+		   strings.Contains(err.Error(), "file already closed") {
+			// Clear the invalid PTY
+			t.ptmx = nil
+			return fmt.Errorf("PTY connection lost: %w", err)
+		}
 		return fmt.Errorf("error sending enter keystroke to PTY: %w", err)
 	}
 	return nil
@@ -184,15 +205,33 @@ func (t *TmuxSession) TapEnter() error {
 
 // TapDAndEnter sends 'D' followed by an enter keystroke to the tmux pane.
 func (t *TmuxSession) TapDAndEnter() error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY not initialized or already closed")
+	}
 	_, err := t.ptmx.Write([]byte{0x44, 0x0D})
 	if err != nil {
-		return fmt.Errorf("error sending enter keystroke to PTY: %w", err)
+		if strings.Contains(err.Error(), "bad file descriptor") || 
+		   strings.Contains(err.Error(), "file already closed") {
+			// Clear the invalid PTY
+			t.ptmx = nil
+			return fmt.Errorf("PTY connection lost: %w", err)
+		}
+		return fmt.Errorf("error sending D+enter keystroke to PTY: %w", err)
 	}
 	return nil
 }
 
 func (t *TmuxSession) SendKeys(keys string) error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY not initialized or already closed")
+	}
 	_, err := t.ptmx.Write([]byte(keys))
+	if err != nil && (strings.Contains(err.Error(), "bad file descriptor") || 
+	                  strings.Contains(err.Error(), "file already closed")) {
+		// Clear the invalid PTY
+		t.ptmx = nil
+		return fmt.Errorf("PTY connection lost: %w", err)
+	}
 	return err
 }
 
@@ -201,7 +240,7 @@ func (t *TmuxSession) SendKeys(keys string) error {
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 	content, err := t.CapturePaneContent()
 	if err != nil {
-		log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
+		log.FileOnlyErrorLog.Printf("error capturing pane content in status monitor: %v", err)
 		return false, false
 	}
 
@@ -265,7 +304,7 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 			select {
 			case <-timeoutCh:
 			default:
-				log.InfoLog.Printf("nuked first stdin: %s", buf[:nr])
+				log.FileOnlyInfoLog.Printf("nuked first stdin: %s", buf[:nr])
 				continue
 			}
 
@@ -303,8 +342,8 @@ func (t *TmuxSession) Detach() {
 	if err != nil {
 		// Log the error but don't panic
 		msg := fmt.Sprintf("error closing attach pty session: %v", err)
-		log.ErrorLog.Println(msg)
-		log.ErrorLog.Println("attempting to continue despite PTY close error")
+		log.FileOnlyErrorLog.Println(msg)
+		log.FileOnlyErrorLog.Println("attempting to continue despite PTY close error")
 	}
 	
 	// Attach goroutines should die on EOF due to the ptmx closing. Call
@@ -326,7 +365,7 @@ func (t *TmuxSession) Detach() {
 			t.ptmx = r
 			// Close the write end since we won't use it
 			w.Close()
-			log.ErrorLog.Println("created minimal PTY replacement for recovery")
+			log.FileOnlyErrorLog.Println("created minimal PTY replacement for recovery")
 		}
 	}
 
@@ -373,12 +412,22 @@ func (t *TmuxSession) SetDetachedSize(width, height int) error {
 
 // updateWindowSize updates the window size of the PTY.
 func (t *TmuxSession) updateWindowSize(cols, rows int) error {
-	return pty.Setsize(t.ptmx, &pty.Winsize{
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY not initialized or already closed")
+	}
+	err := pty.Setsize(t.ptmx, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(cols),
 		X:    0,
 		Y:    0,
 	})
+	if err != nil && (strings.Contains(err.Error(), "bad file descriptor") || 
+	                 strings.Contains(err.Error(), "file already closed")) {
+		// Clear the invalid PTY
+		t.ptmx = nil
+		return fmt.Errorf("PTY connection lost: %w", err)
+	}
+	return err
 }
 
 // DoesSessionExist checks if a tmux session exists
@@ -437,7 +486,7 @@ func CleanupSessions() error {
 	}
 
 	for _, match := range matches {
-		log.InfoLog.Printf("cleaning up session: %s", match)
+		log.FileOnlyInfoLog.Printf("cleaning up session: %s", match)
 		cmd := exec.Command("tmux", "kill-session", "-t", match)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to kill tmux session %s: %v", match, err)
