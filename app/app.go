@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -591,12 +593,60 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		// Default commit message with timestamp
 		commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s", selected.Title, time.Now().Format(time.RFC822))
-		worktree, err := selected.GetGitWorktree()
-		if err != nil {
-			return m, m.handleError(err)
-		}
-		if err = worktree.PushChanges(commitMsg, true); err != nil {
-			return m, m.handleError(err)
+		
+		// Handle Simple Mode differently - use direct git commands
+		if selected.InPlace {
+			// Execute git commands directly on the current directory
+			
+			// First check if there are any changes to commit
+			gitStatusCmd := exec.Command("git", "status", "--porcelain")
+			gitStatusCmd.Dir = selected.Path
+			statusOutput, err := gitStatusCmd.Output()
+			if err != nil {
+				return m, m.handleError(fmt.Errorf("failed to get git status: %w", err))
+			}
+			
+			// If no changes, show message and return
+			if len(statusOutput) == 0 {
+				return m, m.handleError(fmt.Errorf("no changes to commit"))
+			}
+			
+			// Add all changes
+			gitAddCmd := exec.Command("git", "add", ".")
+			gitAddCmd.Dir = selected.Path
+			if err := gitAddCmd.Run(); err != nil {
+				return m, m.handleError(fmt.Errorf("failed to stage changes: %w", err))
+			}
+			
+			// Commit changes
+			gitCommitCmd := exec.Command("git", "commit", "-m", commitMsg)
+			gitCommitCmd.Dir = selected.Path
+			if err := gitCommitCmd.Run(); err != nil {
+				return m, m.handleError(fmt.Errorf("failed to commit changes: %w", err))
+			}
+			
+			// Push changes
+			gitPushCmd := exec.Command("git", "push")
+			gitPushCmd.Dir = selected.Path
+			if err := gitPushCmd.Run(); err != nil {
+				return m, m.handleError(fmt.Errorf("failed to push changes: %w", err))
+			}
+			
+			// Show success message
+			m.errBox.SetInfo("Changes committed and pushed successfully")
+			return m, func() tea.Msg {
+				time.Sleep(3 * time.Second)
+				return hideErrMsg{}
+			}
+		} else {
+			// Standard mode - use worktree
+			worktree, err := selected.GetGitWorktree()
+			if err != nil {
+				return m, m.handleError(err)
+			}
+			if err = worktree.PushChanges(commitMsg, true); err != nil {
+				return m, m.handleError(err)
+			}
 		}
 
 		return m, nil

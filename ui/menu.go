@@ -129,8 +129,9 @@ func (m *Menu) addInstanceOptions() {
 	
 	// Check for in-place (simple mode) instance
 	if m.instance.InPlace {
-		// Simple mode has limited actions - no checkout/resume
-		// Keep submit out of simple mode since it's meant for git operations
+		// Simple mode - include submit for direct git operations
+		actionGroup = append(actionGroup, keys.KeySubmit)
+		// But no checkout/resume for Simple Mode
 	} else {
 		// Standard mode - add submit and checkout/resume
 		actionGroup = append(actionGroup, keys.KeySubmit)

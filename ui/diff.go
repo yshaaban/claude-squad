@@ -3,6 +3,7 @@ package ui
 import (
 	"claude-squad/session"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -70,12 +71,36 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 			Bold(true).
 			Padding(0, 1)
 			
+		// Get git status for current directory
+		gitStatus := "Git status unavailable"
+		gitCmd := exec.Command("git", "status", "-s")
+		gitCmd.Dir = instance.Path
+		gitStatusOutput, err := gitCmd.Output()
+		if err == nil {
+			if len(gitStatusOutput) == 0 {
+				gitStatus = "No changes in working directory"
+			} else {
+				gitStatus = "Changes in working directory:\n\n" + string(gitStatusOutput)
+			}
+			
+			// Also get branch info
+			gitBranchCmd := exec.Command("git", "branch", "--show-current")
+			gitBranchCmd.Dir = instance.Path
+			gitBranchOutput, err := gitBranchCmd.Output()
+			if err == nil {
+				branch := strings.TrimSpace(string(gitBranchOutput))
+				gitStatus = "Current branch: " + branch + "\n\n" + gitStatus
+			}
+		}
+			
 		header := headerStyle.Render(" SIMPLE MODE ACTIVE ")
 		warningTitle := warningStyle.Render("⚠️  Working Directory Warning")
 		warningMessage := "Changes are made directly to your working directory without isolation.\nThis means all file modifications will immediately affect your repository."
 		
 		infoTitle := infoStyle.Render("ℹ️  Git Operations")
-		infoMessage := "• Git diff tracking is disabled in Simple Mode\n• You must use git commands manually for version control\n• To track changes: use 'git diff', 'git add', and 'git commit'\n• For branch isolation, consider using standard mode instead"
+		infoMessage := "• Changes can be committed with the Submit button (p)\n• Commits are made directly to your current branch\n• Use Submit (p) to commit and push changes\n• For branch isolation, consider using standard mode instead"
+		
+		gitStatusTitle := infoStyle.Render("🔍 Git Status")
 		
 		simpleModeMessage := lipgloss.JoinVertical(
 			lipgloss.Center,
@@ -87,6 +112,9 @@ func (d *DiffPane) SetDiff(instance *session.Instance) {
 			"",
 			infoTitle,
 			infoMessage,
+			"",
+			gitStatusTitle,
+			gitStatus,
 			"",
 		)
 		
