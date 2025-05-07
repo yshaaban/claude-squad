@@ -1,7 +1,33 @@
+# IDE and editor files
 .idea
 .aider*
-claude-squad
-**.DS_Store
-*.log
+.vscode/
+**/.DS_Store
 
+# Build artifacts
+claude-squad
+cs_test
+test_server
+test_react
+simple_test_server
+standalone_react_test
+
+# Logs and temporary files
+*.log
+*.tmp
+*.rej
+*.patch
+*.orig
+code_dump.txt
+websocket_log.txt
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Claude specific files
 **/.claude/settings.local.json
+
+# Frontend build artifacts
+frontend/build/
+web/static/dist/

@@ -25,6 +25,7 @@ var (
 	fileLoggingFlag       bool
 	webMonitoringFlag     bool
 	webMonitoringPortFlag int
+	reactUIFlag           bool
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - A terminal-based session manager",
@@ -87,6 +88,7 @@ var (
 				SimpleMode:       simpleModeFlag,
 				WebServerEnabled: webMonitoringFlag,
 				WebServerPort:    webMonitoringPortFlag,
+				ReactUI:          reactUIFlag,
 			}
 			
 			// Ensure web server is properly configured with default port if needed
@@ -182,6 +184,8 @@ func init() {
 		"Enable web monitoring server")
 	rootCmd.Flags().IntVar(&webMonitoringPortFlag, "web-port", 0,
 		"Web monitoring server port (default from config)")
+	rootCmd.Flags().BoolVar(&reactUIFlag, "react", false,
+		"Enable React frontend for web monitoring (requires --web)")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
 

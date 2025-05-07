@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -79,8 +80,9 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 		router.Use(webmiddleware.AuthMiddleware(config))
 	}
 	
-	// Add rate limiting
-	router.Use(webmiddleware.RateLimitMiddleware(100, time.Minute)) // 100 requests per minute
+	// Add rate limiting - exempt WebSocket connections from rate limiting
+	// Increase to 500/minute to handle SPA route changes and asset requests
+	router.Use(webmiddleware.RateLimitMiddleware(500, time.Minute, true)) // 500 requests per minute, WebSockets exempt
 	
 	// Set up CORS - allow all origins for testing
 	router.Use(cors.Handler(cors.Options{
@@ -132,15 +134,14 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 		http.Error(w, "Instance name required via /ws/{name}, /ws/terminal/{name}, or /ws?instance=name", http.StatusBadRequest)
 	})
 
-	// Explicit redirect from the root to easy-terminal.html
-	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/easy-terminal.html", http.StatusFound)
-	})
-	
-	// Explicit redirect from /index.html to easy-terminal.html
-	router.Get("/index.html", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/easy-terminal.html", http.StatusFound)
-	})
+	// Remove explicit handlers for root and index.html
+	// They are now handled by the FileServer in static/serve.go
+	// Check if React app is available for logging
+	if _, err := os.Stat("web/static/dist/index.html"); err == nil {
+		log.FileOnlyInfoLog.Printf("React frontend detected, will be served by FileServer")
+	} else {
+		log.FileOnlyInfoLog.Printf("React frontend not detected, will use legacy UI")
+	}
 	
 	// Static files for web UI
 	router.Handle("/*", static.FileServer())

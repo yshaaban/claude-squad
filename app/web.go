@@ -16,6 +16,7 @@ type StartOptions struct {
 	SimpleMode       bool
 	WebServerEnabled bool
 	WebServerPort    int
+	ReactUI          bool
 }
 
 // StartWebServer initializes and starts the web monitoring server.

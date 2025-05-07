@@ -250,11 +250,35 @@ func newHome(ctx context.Context, startOptions StartOptions) *home {
 	// Start web server if enabled
 	if appConfig.WebServerEnabled {
 		log.InfoLog.Printf("Web server enabled, attempting to start on %s:%d", appConfig.WebServerHost, appConfig.WebServerPort)
-		if err := h.StartWebServer(); err != nil {
-			h.errBox.SetError(fmt.Errorf("Failed to start web server: %w", err))
+		
+		// Check if React UI is requested
+		if startOptions.ReactUI {
+			log.InfoLog.Printf("Using React frontend for web interface")
+			if err := h.StartReactWebServer(); err != nil {
+				h.errBox.SetError(fmt.Errorf("Failed to start React web server: %w", err))
+			} else {
+				// Update menu with web server info with React UI indicator
+				h.menu.SetWebServerInfo(true, appConfig.WebServerHost, appConfig.WebServerPort)
+				log.InfoLog.Printf("React web UI available at http://%s:%d/", 
+					appConfig.WebServerHost, appConfig.WebServerPort)
+				
+				// Also log to standard error for visibility
+				hostToDisplay := "localhost"
+				if appConfig.WebServerHost != "" {
+					hostToDisplay = appConfig.WebServerHost
+				}
+				fmt.Printf("\nReact web UI available: http://%s:%d/\n", 
+					hostToDisplay, 
+					appConfig.WebServerPort)
+			}
 		} else {
-			// Update menu with web server info
-			h.menu.SetWebServerInfo(true, appConfig.WebServerHost, appConfig.WebServerPort)
+			// Standard web server
+			if err := h.StartWebServer(); err != nil {
+				h.errBox.SetError(fmt.Errorf("Failed to start web server: %w", err))
+			} else {
+				// Update menu with web server info
+				h.menu.SetWebServerInfo(true, appConfig.WebServerHost, appConfig.WebServerPort)
+			}
 		}
 	}
 

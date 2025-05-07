@@ -120,15 +120,33 @@ The menu at the bottom of the screen shows available commands:
 2. Provides a RESTful API for accessing instance data
 3. Includes WebSocket support for real-time terminal output streaming
 4. Visualizes git diffs and instance status
-5. Secure authentication and rate limiting for remote access
+5. Features a modern React frontend with real-time updates
+6. Secure authentication and rate limiting for remote access
 
 Run with web monitoring enabled:
 ```bash
-cs --web              # Enable web monitoring on default port (8080)
-cs --web --web-port=9000  # Use a specific port
+cs --web                      # Enable web monitoring on default port (8080)
+cs --web --web-port=9000      # Use a specific port
+cs --web --react              # Enable web monitoring with modern React UI 
+cs -s --web --react           # Simple mode with React web UI (recommended)
 ```
 
 Access the web UI at `http://localhost:8080/` (or your configured port)
+
+The web interface provides:
+- Instance listing with status indicators
+- Real-time terminal streaming with xterm.js
+- Responsive layout that works on desktop and mobile devices
+- Automatic reconnection if connection is lost
+
+#### React Frontend
+The modern React frontend offers additional features:
+- Enhanced terminal experience with better rendering
+- Improved instance management interface
+- Support for desktop and mobile browsers
+- Responsive design for various screen sizes
+- Real-time updates using WebSockets
+- Proper handling of binary and text protocols
 
 ### License
 
