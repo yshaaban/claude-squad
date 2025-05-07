@@ -267,9 +267,24 @@ func instanceToSummary(instance *session.Instance) InstanceSummary {
 		}
 	}
 	
+	// Convert Status enum to proper string representation
+	var statusStr string
+	switch instance.Status {
+	case session.Running:
+		statusStr = "running"
+	case session.Ready:
+		statusStr = "ready"
+	case session.Loading:
+		statusStr = "loading"
+	case session.Paused:
+		statusStr = "paused"
+	default:
+		statusStr = "unknown"
+	}
+	
 	return InstanceSummary{
 		Title:     instance.Title,
-		Status:    string(instance.Status),
+		Status:    statusStr, // Use proper string representation
 		Path:      instance.Path,
 		CreatedAt: instance.CreatedAt,
 		UpdatedAt: instance.UpdatedAt,

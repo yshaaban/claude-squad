@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Simple WebSocket Test</title>
+  <style>
+    body {
+      font-family: monospace;
+      margin: 20px;
+    }
+    #terminal {
+      background: black;
+      color: white;
+      padding: 10px;
+      border-radius: 5px;
+      height: 400px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    #status {
+      margin: 10px 0;
+      padding: 5px;
+      border-radius: 3px;
+    }
+    .connected {
+      background: #dfd;
+      color: #080;
+    }
+    .disconnected {
+      background: #fdd;
+      color: #800;
+    }
+    .connecting {
+      background: #ffd;
+      color: #880;
+    }
+  </style>
+</head>
+<body>
+  <h1>Simple WebSocket Terminal Test</h1>
+  
+  <div id="status" class="disconnected">Disconnected</div>
+  <button id="connect">Connect</button>
+  <button id="disconnect" disabled>Disconnect</button>
+  
+  <div id="terminal"></div>
+  
+  <script>
+    const terminalElement = document.getElementById('terminal');
+    const statusElement = document.getElementById('status');
+    const connectButton = document.getElementById('connect');
+    const disconnectButton = document.getElementById('disconnect');
+    
+    let socket = null;
+    let instanceName = null;
+    
+    // Function to update status display
+    function updateStatus(status, message) {
+      statusElement.className = status;
+      statusElement.textContent = message;
+    }
+    
+    // Function to append text to terminal
+    function appendToTerminal(text) {
+      terminalElement.textContent += text;
+      terminalElement.scrollTop = terminalElement.scrollHeight;
+    }
+    
+    // Function to clear terminal
+    function clearTerminal() {
+      terminalElement.textContent = '';
+    }
+    
+    // Connect to WebSocket
+    function connect() {
+      // Get current instance name using simple convention
+      instanceName = 'simple-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + 
+                    Math.floor(new Date().getTime() / 1000).toString().slice(-6);
+      
+      updateStatus('connecting', `Connecting to instance: ${instanceName}...`);
+      
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws?instance=${instanceName}&format=ansi`;
+      
+      appendToTerminal(`\nConnecting to ${wsUrl}...\n`);
+      
+      // Create WebSocket
+      try {
+        socket = new WebSocket(wsUrl);
+        socket.binaryType = 'arraybuffer';
+        
+        // Configure event handlers
+        socket.onopen = function(event) {
+          updateStatus('connected', `Connected to ${instanceName}`);
+          appendToTerminal(`\nWebSocket connection established\n`);
+          connectButton.disabled = true;
+          disconnectButton.disabled = false;
+        };
+        
+        socket.onmessage = function(event) {
+          try {
+            // Try to parse as JSON
+            if (typeof event.data === 'string') {
+              const data = JSON.parse(event.data);
+              if (data.Content) {
+                appendToTerminal(`\n${data.Content}`);
+              } else {
+                appendToTerminal(`\nReceived JSON message: ${JSON.stringify(data)}\n`);
+              }
+            }
+            // Handle binary data
+            else if (event.data instanceof ArrayBuffer) {
+              const data = new Uint8Array(event.data);
+              // Check if it's an output message (first byte is ASCII 'o')
+              if (data.length > 0 && data[0] === 111) {
+                const text = new TextDecoder().decode(data.slice(1));
+                appendToTerminal(text);
+              } else {
+                appendToTerminal(`\nReceived binary message: ${data.length} bytes\n`);
+              }
+            }
+          } catch (error) {
+            // If not JSON, just append as string
+            appendToTerminal(`\nReceived raw message: ${event.data}\n`);
+          }
+        };
+        
+        socket.onclose = function(event) {
+          updateStatus('disconnected', `Disconnected: ${event.code} ${event.reason || ''}`);
+          appendToTerminal(`\nWebSocket connection closed: ${event.code} ${event.reason || ''}\n`);
+          connectButton.disabled = false;
+          disconnectButton.disabled = true;
+          socket = null;
+        };
+        
+        socket.onerror = function(error) {
+          updateStatus('disconnected', 'WebSocket error occurred');
+          appendToTerminal(`\nWebSocket error: ${error}\n`);
+        };
+      } catch (error) {
+        updateStatus('disconnected', `Failed to create WebSocket: ${error}`);
+        appendToTerminal(`\nFailed to create WebSocket: ${error}\n`);
+      }
+    }
+    
+    // Disconnect from WebSocket
+    function disconnect() {
+      if (socket) {
+        appendToTerminal('\nClosing WebSocket connection...\n');
+        socket.close(1000, 'User closed connection');
+      }
+    }
+    
+    // Set up event listeners
+    connectButton.addEventListener('click', connect);
+    disconnectButton.addEventListener('click', disconnect);
+    
+    // Handle keyboard input to terminal (basic)
+    document.addEventListener('keydown', function(event) {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        if (event.key === 'Enter') {
+          socket.send(JSON.stringify({
+            content: '\n',
+            isCommand: false
+          }));
+        } else if (event.key.length === 1) {
+          socket.send(JSON.stringify({
+            content: event.key,
+            isCommand: false
+          }));
+        }
+      }
+    });
+  </script>
+</body>
+</html>

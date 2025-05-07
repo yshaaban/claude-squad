@@ -1,0 +1,33 @@
+  {
+    "mcpServers": {
+      "gemsuite-mcp": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["/Users/ysh/src/gemsuite-mcp/vertex-mcp-server.cjs"],
+        "env": {
+          "USE_VERTEX_AI": "true",
+          "USE_GEMINI_2_5": "true",
+          "GOOGLE_CLOUD_PROJECT": "uiptah-llm-testing",
+          "VERTEX_LOCATION": "us-central1"
+        },
+        "metadata": {
+          "description": "GemSuite MCP server for Claude Code with Vertex AI integration",
+          "permissions": [
+            "read files",
+            "search",
+            "reason",
+            "analyze",
+            "process",
+            "ultrathink",
+            "gemini_search",
+            "gemini_reason",
+            "gemini_analyze",
+            "gemini_process",
+            "gemini_ultrathink",
+            "test_tool"
+          ]
+        }
+      }
+    }
+  }
+

@@ -1,0 +1,1455 @@
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { Terminal as XTerm } from 'xterm'
+import { FitAddon } from 'xterm-addon-fit'
+import { WebLinksAddon } from 'xterm-addon-web-links'
+import 'xterm/css/xterm.css'
+
+// Message type constants for binary protocol
+const OUTPUT_MESSAGE = 'o'.charCodeAt(0)
+const INPUT_MESSAGE = 'i'.charCodeAt(0)
+const RESIZE_MESSAGE = 'r'.charCodeAt(0)
+const PING_MESSAGE = 'p'.charCodeAt(0)
+const PONG_MESSAGE = 'P'.charCodeAt(0)
+const CLOSE_MESSAGE = 'c'.charCodeAt(0)
+const CLEAR_MESSAGE = 'C'.charCodeAt(0) // Added clear message type
+
+interface TerminalProps {
+  instanceName: string
+  onConnectionChange?: (connected: boolean) => void
+  onMessageReceived?: (count: number) => void
+  onError?: (message: string) => void
+  showStatusMessages?: boolean // Added option to hide status messages
+}
+
+interface TerminalStats {
+  messagesReceived: number
+  lastContentLength: number
+}
+
+const Terminal = ({ 
+  instanceName, 
+  onConnectionChange, 
+  onMessageReceived,
+  onError,
+  showStatusMessages = false // Default to not showing status in terminal output
+}: TerminalProps) => {
+  const terminalRef = useRef<HTMLDivElement>(null)
+  const [terminal, setTerminal] = useState<XTerm | null>(null)
+  const [connected, setConnected] = useState(false)
+  const [socket, setSocket] = useState<WebSocket | null>(null)
+  const [stats, setStats] = useState<TerminalStats>({
+    messagesReceived: 0,
+    lastContentLength: 0
+  })
+  
+  // Status element for showing connection status
+  const statusRef = useRef<HTMLDivElement>(null)
+  const [statusMessage, setStatusMessage] = useState('Initializing...')
+  const [statusClass, setStatusClass] = useState('info')
+  
+  const fitAddonRef = useRef<FitAddon | null>(null)
+  const pingIntervalRef = useRef<number | null>(null)
+  const missedHeartbeatsRef = useRef<number>(0)
+  
+  // Log helper
+  const log = useCallback((type: 'info' | 'error' | 'warn', message: string) => {
+    const prefix = `[Terminal:${instanceName}]`
+    switch (type) {
+      case 'error':
+        console.error(`${prefix} ${message}`)
+        if (onError) onError(message)
+        break
+      case 'warn':
+        console.warn(`${prefix} ${message}`)
+        break
+      default:
+        console.log(`${prefix} ${message}`)
+    }
+    
+    // Update status message based on log
+    if (type === 'error') {
+      setStatusMessage(message)
+      setStatusClass('error')
+    } else if (message.includes('connected') || message.includes('ready')) {
+      setStatusMessage(message)
+      setStatusClass('success')
+    } else if (type === 'warn') {
+      setStatusMessage(message)
+      setStatusClass('warning')
+    }
+  }, [instanceName, onError])
+
+  // Update terminal status (without writing to terminal)
+  const updateStatus = useCallback((message: string, type: 'info' | 'error' | 'success' | 'warning' = 'info') => {
+    setStatusMessage(message)
+    setStatusClass(type)
+    
+    if (showStatusMessages && terminal) {
+      // Optionally write to terminal if showStatusMessages is true
+      terminal.write(`\r\n\x1b[33m[Status] ${message}\x1b[0m\r\n`)
+    }
+  }, [terminal, showStatusMessages])
+
+  // Send binary message with type prefix
+  const sendMessage = useCallback((type: number, data: Uint8Array) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      log('warn', 'Cannot send message - not connected')
+      return false
+    }
+    
+    try {
+      // Create message with type prefix
+      const message = new Uint8Array(data.length + 1)
+      message[0] = type
+      message.set(data, 1)
+      
+      socket.send(message)
+      return true
+    } catch (error) {
+      log('error', `Failed to send message: ${error}`)
+      return false
+    }
+  }, [socket, log])
+
+  // Send ping to keep connection alive
+  const sendPing = useCallback(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    
+    sendMessage(PING_MESSAGE, new Uint8Array(0))
+    missedHeartbeatsRef.current++
+    log('info', `Sending keep-alive ping (missed: ${missedHeartbeatsRef.current})`)
+  }, [socket, sendMessage, log])
+
+  // Send input to terminal
+  const sendInput = useCallback((text: string) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN || !text) {
+      log('warn', 'Cannot send input - not connected or empty text')
+      return
+    }
+    
+    try {
+      // Try JSON format first (new protocol)
+      const message = {
+        content: text,
+        isCommand: false
+      }
+      
+      socket.send(JSON.stringify(message))
+      log('info', `Sent input: ${text}`)
+    } catch (error) {
+      // Fallback to binary protocol
+      const data = new TextEncoder().encode(text)
+      sendMessage(INPUT_MESSAGE, data)
+      log('info', `Sent input using binary protocol: ${text}`)
+    }
+  }, [socket, sendMessage, log])
+
+  // Clear terminal
+  const clearTerminal = useCallback(() => {
+    if (terminal) {
+      terminal.clear()
+      log('info', 'Terminal cleared')
+      
+      // Also try to tell server to clear (if supported)
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        try {
+          // Try JSON format first
+          const message = {
+            isCommand: true,
+            content: 'clear_terminal'
+          }
+          socket.send(JSON.stringify(message))
+        } catch (error) {
+          // Fallback to binary protocol
+          sendMessage(CLEAR_MESSAGE, new TextEncoder().encode('clear'))
+        }
+      }
+    }
+  }, [terminal, socket, sendMessage, log])
+
+  // Send terminal resize
+  const sendResize = useCallback(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN || !terminalRef.current) {
+      return
+    }
+    
+    // Only proceed if we have a valid terminal
+    if (!terminal) return
+    
+    try {
+      // Get terminal dimensions directly from the terminal object
+      // (not from options, which may not be updated after resize)
+      const cols = terminal.cols || 80
+      const rows = terminal.rows || 24
+      
+      // Verify dimensions are reasonable
+      if (cols < 2 || rows < 2) {
+        log('warn', `Invalid terminal dimensions: ${cols}x${rows}`)
+        return
+      }
+      
+      log('info', `Sending resize: ${cols}x${rows}`)
+      
+      // Try JSON format first
+      const message = {
+        cols: cols,
+        rows: rows,
+        isCommand: true,
+        content: 'resize'
+      }
+      
+      socket.send(JSON.stringify(message))
+      log('info', `Sent resize as JSON: ${cols}x${rows}`)
+    } catch (error) {
+      // Fallback to binary protocol
+      try {
+        // Use safe default values if needed
+        const cols = (terminal.cols > 0) ? terminal.cols : 80
+        const rows = (terminal.rows > 0) ? terminal.rows : 24
+        
+        const resizeData = JSON.stringify({ cols, rows })
+        sendMessage(RESIZE_MESSAGE, new TextEncoder().encode(resizeData))
+        log('info', `Sent resize as binary fallback: ${cols}x${rows}`)
+      } catch (innerError) {
+        log('error', `Failed to send resize command: ${innerError}`)
+      }
+    }
+  }, [socket, sendMessage, terminal, log])
+
+  // Initialize terminal with proper dimension handling
+  useEffect(() => {
+    if (!terminalRef.current) return
+    
+    // FIXED: Use fixed, conservative dimensions for initial setup to prevent errors
+    // These are deliberately conservative to ensure they work in all cases
+    const DEFAULT_COLS = 80
+    const DEFAULT_ROWS = 24
+    
+    // Log the initial setup
+    log('info', `Initializing terminal with fixed size: ${DEFAULT_COLS}x${DEFAULT_ROWS}`)
+    
+    // Measure container explicitly before terminal creation
+    let containerWidth = 0;
+    let containerHeight = 0;
+    
+    try {
+      // Force layout calculation to get accurate dimensions
+      containerWidth = terminalRef.current.offsetWidth || terminalRef.current.clientWidth;
+      containerHeight = terminalRef.current.offsetHeight || terminalRef.current.clientHeight;
+      
+      // Log the container dimensions
+      log('info', `Terminal container dimensions (pre-creation): ${containerWidth}x${containerHeight}`);
+      
+      // Force minimum dimensions if container is too small
+      if (containerWidth < 100) containerWidth = 640;
+      if (containerHeight < 100) containerHeight = 480;
+    } catch (e) {
+      log('warn', `Error measuring container: ${e}, using defaults`);
+      containerWidth = 640;
+      containerHeight = 480;
+    }
+    
+    // IMPORTANT: Create terminal with fixed dimensions first - then resize later
+    // This prevents the "Cannot read properties of undefined (reading 'dimensions')" error
+    const term = new XTerm({
+      cursorBlink: true,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontSize: 14,
+      theme: {
+        background: '#1e1e1e',
+        foreground: '#f0f0f0',
+        cursor: '#f0f0f0',
+        selectionBackground: 'rgba(240, 240, 240, 0.3)'
+      },
+      convertEol: true,
+      scrollback: 5000,
+      // Always use fixed dimensions initially - we'll resize once DOM is ready
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      allowProposedApi: true,
+      // Disable features that might cause dimension issues during initialization
+      disableStdin: false
+    })
+    
+    // First store the terminal instance in state
+    setTerminal(term)
+    
+    // Explicitly set dimensions directly on term object to prevent undefined errors
+    const ensureValidDimensions = () => {
+      try {
+        if (!term.cols || term.cols < 2) {
+          // @ts-ignore - directly access internal property
+          term._core._cols = DEFAULT_COLS;
+        }
+        if (!term.rows || term.rows < 2) {
+          // @ts-ignore - directly access internal property
+          term._core._rows = DEFAULT_ROWS;
+        }
+        log('info', `Ensured minimum dimensions: ${term.cols}x${term.rows}`);
+      } catch (e) {
+        log('error', `Failed to enforce minimum dimensions: ${e}`);
+      }
+    };
+    
+    // Create addons but don't load them right away - delay until terminal is opened
+    const fitAddon = new FitAddon()
+    const webLinksAddon = new WebLinksAddon()
+    
+    // Store reference for later use
+    fitAddonRef.current = fitAddon
+    
+    // Track if a fit operation is in progress to prevent overlapping calls
+    const fitInProgressRef = useRef(false);
+
+    // Safely fit terminal only when the DOM is ready and visible
+    const safelyFitTerminal = () => {
+      // Prevent concurrent fit operations
+      if (fitInProgressRef.current) {
+        log('warn', 'Terminal fit operation already in progress, skipping duplicate fit request');
+        return false;
+      }
+      
+      // Set the fit lock
+      fitInProgressRef.current = true;
+      
+      try {
+        // Check if terminal reference exists
+        if (!terminalRef.current) {
+          log('warn', 'Terminal container reference is null, skipping fit');
+          fitInProgressRef.current = false;
+          return false;
+        }
+        
+        // Ensure terminal has valid dimensions before attempting to fit
+        ensureValidDimensions();
+        
+        // Check if the terminal container has dimensions before fitting
+        const containerWidth = terminalRef.current.offsetWidth || terminalRef.current.clientWidth;
+        const containerHeight = terminalRef.current.offsetHeight || terminalRef.current.clientHeight;
+        
+        if (containerWidth <= 0 || containerHeight <= 0) {
+          log('warn', `Terminal container has invalid dimensions: ${containerWidth}x${containerHeight}, skipping fit`);
+          fitInProgressRef.current = false;
+          return false;
+        }
+        
+        // Check if terminal and fitAddon are available
+        if (!term || !fitAddonRef.current) {
+          log('warn', 'Terminal or fitAddon not available yet, skipping fit');
+          fitInProgressRef.current = false;
+          return false;
+        }
+          
+        log('info', `Fitting terminal to container dimensions: ${containerWidth}x${containerHeight}`);
+        
+        // Apply fit with safety checks
+        try {
+          // Before fit, use default dimensions if needed
+          if (!term.cols || term.cols < 2 || !term.rows || term.rows < 2) {
+            term.resize(DEFAULT_COLS, DEFAULT_ROWS);
+            log('info', `Reset terminal to default dimensions: ${DEFAULT_COLS}x${DEFAULT_ROWS}`);
+          }
+          
+          // Try to fit the terminal with protection against dimension errors
+          try {
+            fitAddonRef.current.fit();
+          } catch (innerFitErr) {
+            log('error', `Inner fit error: ${innerFitErr}, applying safe dimensions`);
+            term.resize(DEFAULT_COLS, DEFAULT_ROWS);
+          }
+          
+          // Verify dimensions are valid after fit
+          const fitSuccess = term.cols > 2 && term.rows > 2;
+          
+          // Log the new dimensions
+          if (fitSuccess) {
+            log('info', `Terminal fit successful, new size: ${term.cols}x${term.rows}`);
+          } else {
+            log('warn', `Terminal fit produced invalid dimensions: ${term.cols}x${term.rows}, applying fallback`);
+            term.resize(DEFAULT_COLS, DEFAULT_ROWS);
+          }
+          
+          // Send resize event after successful fit with an increased delay
+          // And release fit lock when done
+          setTimeout(() => {
+            try {
+              if (term && term.cols > 2 && term.rows > 2 && sendResize) {
+                log('info', `Sending resize event with dimensions: ${term.cols}x${term.rows}`);
+                sendResize();
+              } else if (term && sendResize) {
+                // If dimensions are invalid, use defaults
+                log('info', `Sending resize with default dimensions: ${DEFAULT_COLS}x${DEFAULT_ROWS}`);
+                term.resize(DEFAULT_COLS, DEFAULT_ROWS);
+                sendResize();
+              }
+            } catch (err) {
+              log('error', `Error sending resize event: ${err}`);
+            } finally {
+              // Always release the fit lock after resize
+              fitInProgressRef.current = false;
+            }
+          }, 500); // Increased delay for safety
+          
+          return fitSuccess;
+        } catch (fitErr) {
+          log('error', `Fit operation failed: ${fitErr}`);
+          
+          // Apply safe fallback dimensions on error
+          try {
+            if (term && term.resize) {
+              term.resize(DEFAULT_COLS, DEFAULT_ROWS);
+              log('info', `Applied fallback dimensions after error: ${DEFAULT_COLS}x${DEFAULT_ROWS}`);
+            
+              // Still try to send resize event with fallback dimensions
+              setTimeout(() => {
+                try {
+                  if (sendResize) sendResize();
+                } catch (err) {
+                  log('error', `Error sending resize after fallback: ${err}`);
+                } finally {
+                  // Always release the fit lock after resize
+                  fitInProgressRef.current = false;
+                }
+              }, 500);
+            } else {
+              // Release fit lock if we can't resize
+              fitInProgressRef.current = false;
+            }
+          } catch (resizeErr) {
+            log('error', `Failed to apply fallback dimensions: ${resizeErr}`);
+            fitInProgressRef.current = false;
+          }
+          
+          return false;
+        }
+      } catch (err) {
+        log('error', `Failed to fit terminal: ${err}`);
+        fitInProgressRef.current = false;
+        return false;
+      }
+    }
+    
+    // Terminal initialization singleton flag to prevent multiple calls
+    const initializationInProgressRef = useRef(false);
+    
+    // Sequential terminal initialization with checks at each step
+    const initializeTerminal = () => {
+      // Prevent multiple initialization sequences
+      if (initializationInProgressRef.current) {
+        log('warn', 'Terminal initialization already in progress, skipping redundant call');
+        return;
+      }
+      
+      // Set flag to prevent multiple initialization calls
+      initializationInProgressRef.current = true;
+      
+      log('info', 'Starting terminal initialization sequence...');
+      
+      // Step 1: Open terminal with delay to ensure DOM is ready
+      setTimeout(() => {
+        try {
+          if (!terminalRef.current) {
+            log('error', 'Terminal container reference lost during initialization');
+            initializationInProgressRef.current = false;
+            return;
+          }
+          
+          log('info', 'Opening terminal with default dimensions...')
+          term.open(terminalRef.current)
+          
+          // Ensure we have valid dimensions right after opening
+          ensureValidDimensions();
+          
+          // Step 2: Load addons with delay
+          setTimeout(() => {
+            try {
+              log('info', 'Loading terminal addons...')
+              term.loadAddon(fitAddon)
+              term.loadAddon(webLinksAddon)
+              log('info', 'Terminal addons loaded successfully')
+              
+              // Update status
+              updateStatus('Initializing terminal...')
+              
+              // Step 3: Perform fit with longer delay - ONCE ONLY
+              setTimeout(() => {
+                try {
+                  log('info', 'Attempting initial terminal fit (ONE TIME)...')
+                  const fitSuccess = safelyFitTerminal();
+                  
+                  // Step 4: Connect to websocket only after fit
+                  setTimeout(() => {
+                    // Mark initialization as complete before triggering connection
+                    initializationInProgressRef.current = false;
+                    updateStatus(`Connecting to instance: ${instanceName}...`, 'info')
+                  }, 300);
+                  
+                } catch (fitError) {
+                  log('error', `Initial terminal fit error: ${fitError}`)
+                  // Still continue with connection using default dimensions
+                  term.resize(DEFAULT_COLS, DEFAULT_ROWS);
+                  updateStatus(`Connecting with default terminal size...`, 'warning')
+                  
+                  // Mark initialization as complete
+                  initializationInProgressRef.current = false;
+                }
+              }, 500) // Longer delay for fit operation
+              
+            } catch (addonErr) {
+              log('error', `Failed to load terminal addons: ${addonErr}`)
+              // Continue with basic functionality
+              updateStatus(`Initializing terminal with limited functionality...`, 'warning')
+              
+              // Mark initialization as complete on error
+              initializationInProgressRef.current = false;
+            }
+          }, 200) // Delay for addon loading
+          
+        } catch (termOpenError) {
+          log('error', `Failed to open terminal: ${termOpenError}`)
+          updateStatus(`Failed to initialize terminal: ${termOpenError}`, 'error')
+          
+          // Mark initialization as complete on error
+          initializationInProgressRef.current = false;
+        }
+      }, 100) // Delay for terminal opening
+    };
+    
+    // Start the initialization sequence - ONCE ONLY
+    initializeTerminal();
+    
+    // Handle user input
+    term.onData(data => {
+      if (connected && socket && socket.readyState === WebSocket.OPEN) {
+        sendInput(data)
+      }
+    })
+    
+    // Handle window resize with debouncing to prevent excessive calls
+    let resizeTimeout: number | null = null
+    const handleResize = () => {
+      // Skip resize if initialization is still in progress
+      if (initializationInProgressRef.current) {
+        log('info', 'Skipping window resize handler during initialization');
+        return;
+      }
+      
+      // Clear any existing resize timeout
+      if (resizeTimeout) {
+        window.clearTimeout(resizeTimeout)
+      }
+      
+      // Use longer debounce time to avoid rapid resize calls
+      resizeTimeout = window.setTimeout(() => {
+        try {
+          // Skip if fit operation is already in progress
+          if (fitInProgressRef.current) {
+            log('info', 'Another fit operation in progress, skipping resize fit');
+            return;
+          }
+          
+          log('info', 'Window resize detected, fitting terminal...');
+          const fitted = safelyFitTerminal();
+          
+          // sendResize is already called inside safelyFitTerminal
+          // No need to call it again here
+        } catch (resizeErr) {
+          log('error', `Error handling window resize: ${resizeErr}`);
+        } finally {
+          resizeTimeout = null;
+        }
+      }, 300) // Further increased debounce time for better performance
+    }
+    
+    window.addEventListener('resize', handleResize)
+    
+    // Also handle visibility changes - with lock prevention
+    const handleVisibilityChange = () => {
+      // Only process when tab becomes visible
+      if (document.visibilityState === 'visible') {
+        // Skip if terminal initialization is still in progress
+        if (initializationInProgressRef.current) {
+          log('info', 'Skipping visibility handler during initialization');
+          return;
+        }
+        
+        // Use longer delay for visibility changes
+        setTimeout(() => {
+          try {
+            // Skip if fit operation is already in progress
+            if (fitInProgressRef.current) {
+              log('info', 'Another fit operation in progress, skipping visibility fit');
+              return;
+            }
+            
+            log('info', 'Document visibility changed to visible, fitting terminal...');
+            safelyFitTerminal();
+            // sendResize is called inside safelyFitTerminal
+          } catch (visibilityErr) {
+            log('error', `Error handling visibility change: ${visibilityErr}`);
+          }
+        }, 400) // Even longer delay for visibility changes
+      } else {
+        // When tab becomes hidden, log but don't do anything else
+        log('info', 'Terminal tab hidden, suspending operations');
+      }
+    }
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    
+    // Add keyboard shortcut for clearing terminal (Ctrl+L)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'l') {
+        clearTerminal()
+        e.preventDefault()
+      }
+    }
+    
+    document.addEventListener('keydown', handleKeyDown)
+    
+    // Cleanup
+    return () => {
+      try {
+        log('info', 'Cleaning up terminal component...')
+        window.removeEventListener('resize', handleResize)
+        document.removeEventListener('visibilitychange', handleVisibilityChange)
+        document.removeEventListener('keydown', handleKeyDown)
+        
+        if (resizeTimeout) {
+          window.clearTimeout(resizeTimeout)
+        }
+        
+        // Dispose terminal
+        if (term) {
+          term.dispose()
+          log('info', 'Terminal disposed')
+        }
+      } catch (cleanupErr) {
+        console.error('Error during terminal cleanup:', cleanupErr)
+      }
+    }
+  }, [instanceName, updateStatus, sendResize, clearTerminal, log]) // Remove connected and socket deps
+  
+  // Start ping interval
+  const startPingInterval = useCallback(() => {
+    // Clear existing interval if any
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current)
+    }
+    
+    // Reset heartbeat counter
+    missedHeartbeatsRef.current = 0
+    
+    // Start new interval
+    const MAX_MISSED_HEARTBEATS = 3
+    
+    pingIntervalRef.current = window.setInterval(() => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        // Check if we've missed too many heartbeats
+        if (missedHeartbeatsRef.current >= MAX_MISSED_HEARTBEATS) {
+          log('warn', `Missed ${missedHeartbeatsRef.current} heartbeats - reconnecting`)
+          
+          // Force close and reconnect
+          socket.close()
+          clearInterval(pingIntervalRef.current!)
+          pingIntervalRef.current = null
+          
+          // Schedule reconnection after a delay
+          setTimeout(() => {
+            log('info', 'Attempting to reconnect after missed heartbeats')
+            setSocket(null)
+            setConnected(false)
+          }, 1000)
+          
+          return
+        }
+        
+        // Send ping
+        sendPing()
+      } else {
+        // Not connected
+        log('warn', 'Cannot send ping - connection not open')
+        clearInterval(pingIntervalRef.current!)
+        pingIntervalRef.current = null
+      }
+    }, 15000) // Every 15 seconds
+  }, [socket, sendPing, log])
+  
+  // Reconnection with exponential backoff
+  const reconnectAttemptsRef = useRef(0)
+  const reconnectTimeoutRef = useRef<number | null>(null)
+  const maxReconnectDelay = 30000 // Max 30 seconds between reconnects - increased to prevent hammering
+  const maxReconnectAttempts = 3  // Reduced to prevent excessive retries
+  const connectionLockRef = useRef(false) // Lock to prevent multiple parallel connection attempts
+  const processedContentHashRef = useRef(new Set<string>()) // Track processed content
+  
+  // Hash function for deduplication
+  const hashContent = useCallback((content: string): string => {
+    // Simple hash for content deduplication
+    let hash = 0
+    for (let i = 0; i < content.length; i++) {
+      const char = content.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash |= 0 // Convert to 32bit integer
+    }
+    return hash.toString(16)
+  }, [])
+  
+  // Check if instance exists before connecting
+  const checkInstanceExists = useCallback(async () => {
+    try {
+      // First, check if the instance exists by making a fetch request to the API
+      const response = await fetch(`/api/instances/${instanceName}`)
+      if (!response.ok) {
+        if (response.status === 404) {
+          log('error', `Instance '${instanceName}' not found`)
+          updateStatus(`Instance '${instanceName}' not found`, 'error')
+          return false
+        } else {
+          log('error', `Failed to check instance status: ${response.status} ${response.statusText}`)
+          updateStatus(`Failed to verify instance: ${response.statusText}`, 'error')
+          return false
+        }
+      }
+      
+      // If we got here, the instance exists
+      return true
+    } catch (error) {
+      log('error', `Error checking instance existence: ${error}`)
+      return false
+    }
+  }, [instanceName, log, updateStatus])
+
+  // Cleanup active WebSocket connections
+  const cleanupExistingConnections = useCallback(() => {
+    // Maximum concurrent connections to the same instance should be 1
+    if (socket) {
+      try {
+        log('info', `Closing existing WebSocket for instance ${instanceName}`)
+        socket.close(1000, "Cleanup for new connection")
+        setSocket(null) // Remove the reference immediately to prevent any further usage
+      } catch (err) {
+        log('error', `Error closing existing WebSocket: ${err}`)
+      }
+    }
+  }, [socket, instanceName, log])
+  
+  // Constants for connection management
+  const CONNECTION_WAIT_TIME = 3000; // 3 seconds between connection attempts
+  const MAX_CONNECTION_ATTEMPTS = 3; // Maximum number of connection attempts
+  const GLOBAL_CONNECTION_TIMEOUT = 20000; // 20 seconds global timeout
+  
+  // Track the time and state of the last global connection attempt
+  const lastConnectionAttemptRef = useRef<number>(0);
+  const globalConnectionTimeoutRef = useRef<number | null>(null);
+  
+  // Connect to WebSocket with proper connection limiting and global timeout
+  const connectWebSocket = useCallback(async () => {
+    // Before attempting connection, check for browser tab visibility
+    // This helps avoid creating connections in background tabs
+    if (document.visibilityState !== 'visible') {
+      log('warn', 'Browser tab is not visible, skipping connection attempt');
+      return;
+    }
+  
+    // Early return if we already have an active global timeout
+    if (globalConnectionTimeoutRef.current !== null) {
+      log('warn', 'A global connection timeout is already active, skipping new connection attempt');
+      return;
+    }
+    
+    // Early return if connection lock is active
+    if (connectionLockRef.current) {
+      log('warn', 'Connection attempt already in progress (connection locked)');
+      return;
+    }
+
+    // Early validation of socket state - avoid redundant connections
+    if (socket) {
+      if (socket.readyState === WebSocket.OPEN) {
+        log('warn', 'Already connected - WebSocket is OPEN');
+        return;
+      } else if (socket.readyState === WebSocket.CONNECTING) {
+        log('warn', 'Connection already in progress (WebSocket CONNECTING)');
+        return;
+      }
+      // For CLOSING or CLOSED states, we'll clean up later
+    }
+    
+    // Check if we've reached maximum reconnect attempts
+    if (reconnectAttemptsRef.current >= MAX_CONNECTION_ATTEMPTS) {
+      log('warn', `Maximum connection attempts (${MAX_CONNECTION_ATTEMPTS}) reached, stopping`);
+      updateStatus(`Maximum connection attempts reached. Please refresh the page.`, 'error');
+      return;
+    }
+    
+    // Throttle connection attempts based on time since last attempt
+    const now = Date.now();
+    const timeSinceLastAttempt = now - lastConnectionAttemptRef.current;
+    
+    if (timeSinceLastAttempt < CONNECTION_WAIT_TIME) {
+      const waitTime = CONNECTION_WAIT_TIME - timeSinceLastAttempt;
+      log('info', `Throttling connection attempt, waiting ${waitTime}ms before trying again`);
+      
+      // Instead of awaiting, use timeout to prevent blocking this function
+      setTimeout(() => {
+        // Re-check lock before calling recursively
+        if (!connectionLockRef.current) {
+          connectWebSocket();
+        }
+      }, waitTime);
+      
+      return; // Exit early
+    }
+    
+    // Set connection lock before proceeding
+    connectionLockRef.current = true;
+    
+    // Log connection attempt with detailed browser info
+    log('info', `Starting connection attempt #${reconnectAttemptsRef.current + 1} with ${navigator.userAgent}`);
+    
+    // Set a global timeout to release all WebSocket resources if connection fails
+    globalConnectionTimeoutRef.current = window.setTimeout(() => {
+      log('warn', `Global connection timeout after ${GLOBAL_CONNECTION_TIMEOUT}ms, releasing all resources`);
+      
+      // Clean up any existing connections
+      cleanupExistingConnections();
+      
+      // Release all locks and timers
+      connectionLockRef.current = false;
+      reconnectAttemptsRef.current = 0;
+      
+      if (reconnectTimeoutRef.current !== null) {
+        window.clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      
+      // Clear this timeout reference
+      globalConnectionTimeoutRef.current = null;
+      
+      // Update status
+      updateStatus('Connection timed out. Try refreshing the page.', 'error');
+    }, GLOBAL_CONNECTION_TIMEOUT);
+    
+    // Reset content tracking on new connection
+    processedContentHashRef.current.clear();
+    
+    // Clean up any existing socket before creating a new one
+    if (socket) {
+      log('info', 'Cleaning up existing socket before new connection attempt');
+      cleanupExistingConnections();
+    }
+    
+    // Set the connection lock
+    connectionLockRef.current = true
+    lastConnectionAttemptRef.current = Date.now(); // Record this attempt
+    
+    // Clear any existing reconnect timeout
+    if (reconnectTimeoutRef.current !== null) {
+      window.clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+    
+    // Update status to checking instance
+    updateStatus('Verifying instance exists...', 'info')
+    
+    // Check if instance exists before attempting to connect
+    const instanceExists = await checkInstanceExists()
+    if (!instanceExists) {
+      log('error', `Instance '${instanceName}' does not exist or could not be verified`)
+      updateStatus(`Instance '${instanceName}' not found or inaccessible`, 'error')
+      
+      // Release the connection lock so we can try again later if needed
+      connectionLockRef.current = false
+      
+      // Don't try to reconnect to non-existent instances
+      reconnectAttemptsRef.current = maxReconnectAttempts + 1
+      return
+    }
+    
+    // Update status to connecting (don't write to terminal)
+    updateStatus('Connecting to WebSocket...', 'info')
+    
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    // Use the direct URL pattern which is more reliable
+    // Note: Router is configured to accept /ws/{name} pattern which is preferred over query params
+    const wsUrl = `${protocol}//${window.location.host}/ws/${instanceName}?format=ansi&privileges=read-write`
+    
+    log('info', `Connecting to WebSocket: ${wsUrl}`)
+    
+    try {
+      // More detailed logging for websocket creation
+      log('info', `Creating WebSocket with URL: ${wsUrl}, protocol: ${protocol}`)
+      
+      const ws = new WebSocket(wsUrl)
+      ws.binaryType = 'arraybuffer'
+      
+      // Log the websocket state
+      log('info', `WebSocket initial state: ${ws.readyState === WebSocket.CONNECTING ? 'CONNECTING' : 
+        ws.readyState === WebSocket.OPEN ? 'OPEN' : 
+        ws.readyState === WebSocket.CLOSING ? 'CLOSING' : 'CLOSED'}`)
+      
+      // Set a connection timeout
+      const connectionTimeout = window.setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          log('warn', `WebSocket connection timeout after 10s, state: ${
+            ws.readyState === WebSocket.CONNECTING ? 'CONNECTING' : 
+            ws.readyState === WebSocket.OPEN ? 'OPEN' : 
+            ws.readyState === WebSocket.CLOSING ? 'CLOSING' : 'CLOSED'}`)
+          
+          // Don't call close directly, it may cause additional events, use abort instead
+          if ('abort' in ws) {
+            // For browsers that support it
+            (ws as any).abort();
+          } else {
+            ws.close()
+          }
+          
+          // Release the connection lock
+          connectionLockRef.current = false
+        }
+      }, 10000) // 10 second connection timeout
+      
+      ws.onopen = () => {
+        // Clear the connection timeout
+        clearTimeout(connectionTimeout)
+        
+        // Clear the global timeout since connection was successful
+        if (globalConnectionTimeoutRef.current !== null) {
+          window.clearTimeout(globalConnectionTimeoutRef.current)
+          globalConnectionTimeoutRef.current = null
+        }
+        
+        log('info', 'WebSocket connection established')
+        
+        // Reset reconnection attempts on successful connection
+        reconnectAttemptsRef.current = 0
+        
+        // Update status instead of writing to terminal
+        updateStatus('WebSocket connected', 'success')
+        
+        // Update state
+        setConnected(true)
+        setSocket(ws)
+        if (onConnectionChange) onConnectionChange(true)
+        
+        // Send initial resize after a brief delay
+        setTimeout(() => {
+          try {
+            sendResize()
+            startPingInterval()
+          } catch (error) {
+            log('error', `Error during post-connection setup: ${error}`)
+          }
+        }, 300)
+      }
+      
+      ws.onmessage = (event) => {
+        setStats(prev => ({
+          messagesReceived: prev.messagesReceived + 1,
+          lastContentLength: typeof event.data === 'string' ? event.data.length : event.data.byteLength
+        }))
+        
+        if (onMessageReceived) {
+          onMessageReceived(stats.messagesReceived + 1)
+        }
+        
+        try {
+          // Handle binary data (old protocol)
+          if (event.data instanceof ArrayBuffer) {
+            const data = new Uint8Array(event.data)
+            if (data.length === 0) {
+              log('warn', 'Received empty binary message')
+              return
+            }
+            
+            const messageType = data[0]
+            const payload = data.slice(1)
+            
+            switch (messageType) {
+              case OUTPUT_MESSAGE:
+                const content = new TextDecoder().decode(payload)
+                
+                // Process content only if it's not a duplicate
+                const contentHash = hashContent(content)
+                
+                // Check if we've seen this exact content before
+                if (!processedContentHashRef.current.has(contentHash)) {
+                  if (terminal) {
+                    terminal.write(content)
+                  }
+                  
+                  // Add to processed content set (limited size)
+                  processedContentHashRef.current.add(contentHash)
+                  
+                  // Keep the set size reasonable - remove oldest entries after 100
+                  if (processedContentHashRef.current.size > 100) {
+                    const iterator = processedContentHashRef.current.values()
+                    processedContentHashRef.current.delete(iterator.next().value)
+                  }
+                } else {
+                  log('info', 'Skipped duplicate content')
+                }
+                break
+                
+              case PONG_MESSAGE:
+                missedHeartbeatsRef.current = 0
+                log('info', 'Received pong')
+                break
+                
+              default:
+                log('warn', `Unknown message type: ${messageType}`)
+            }
+          }
+          // Handle text data (JSON format - new protocol)
+          else if (typeof event.data === 'string') {
+            try {
+              const data = JSON.parse(event.data)
+              
+              if (data.type === 'config') {
+                log('info', 'Received terminal config')
+              } else if (data.content) {
+                // Process content only if it's not a duplicate
+                const contentHash = hashContent(data.content)
+                
+                if (!processedContentHashRef.current.has(contentHash)) {
+                  if (terminal) {
+                    terminal.write(data.content)
+                  }
+                  
+                  // Add to processed content set (limited size)
+                  processedContentHashRef.current.add(contentHash)
+                  
+                  // Keep the set size reasonable
+                  if (processedContentHashRef.current.size > 100) {
+                    const iterator = processedContentHashRef.current.values()
+                    processedContentHashRef.current.delete(iterator.next().value)
+                  }
+                } else {
+                  log('info', 'Skipped duplicate content (JSON)')
+                }
+              }
+            } catch (e) {
+              // Not JSON, try to display as raw text
+              if (terminal) {
+                // Check for duplicates of raw text too
+                const contentHash = hashContent(event.data)
+                
+                if (!processedContentHashRef.current.has(contentHash)) {
+                  terminal.write(event.data)
+                  processedContentHashRef.current.add(contentHash)
+                }
+              }
+            }
+          }
+        } catch (error) {
+          log('error', `Error handling message: ${error}`)
+        }
+      }
+      
+      ws.onclose = (event) => {
+        clearTimeout(connectionTimeout)
+        log('info', `WebSocket connection closed: ${event.code} ${event.reason || ''}`)
+        setConnected(false)
+        setSocket(null)
+        if (onConnectionChange) onConnectionChange(false)
+        
+        // Check for 404 Not Found in reason or 1011 error code (server error)
+        const isInstanceNotFoundError = 
+          (event.reason && (
+            event.reason.includes('not found') || 
+            event.reason.includes('not exist') || 
+            event.reason.includes('404')
+          )) || 
+          event.code === 1011;
+        
+        if (isInstanceNotFoundError) {
+          // Instance not found - don't try to reconnect
+          log('error', `Instance not found error: ${event.reason}`)
+          updateStatus(`Instance '${instanceName}' not found`, 'error')
+          
+          // Release the connection lock
+          connectionLockRef.current = false
+          
+          // Block future reconnection attempts for this instance
+          reconnectAttemptsRef.current = maxReconnectAttempts + 1
+          return
+        }
+        
+        // Update status
+        updateStatus(`Connection closed: ${event.reason || 'Unknown reason'}`, 'warning')
+        
+        // Clear ping interval
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current)
+          pingIntervalRef.current = null
+        }
+        
+        // Release the connection lock to allow new connection attempts
+        connectionLockRef.current = false
+        
+        // Don't attempt to reconnect for certain close codes
+        const noReconnectCodes = [1000, 1001, 1008] // Normal close, Going Away, Policy violation
+        if (noReconnectCodes.includes(event.code)) {
+          if (event.code === 1008) {
+            // Rate limiting - don't automatically reconnect
+            log('warn', 'Connection closed due to policy violation (rate limiting)')
+            updateStatus('Connection closed due to rate limiting. Please wait before reconnecting.', 'error')
+          } else {
+            log('info', `Normal closure (${event.code}), no reconnection needed`)
+          }
+          return
+        }
+        
+        // Exponential backoff for reconnection
+        reconnectAttemptsRef.current++
+        
+        // Calculate delay: 1s, 2s, 4s, 8s, 16s, up to maxReconnectDelay
+        const baseDelay = 1000 // Start with 1 second
+        const exponentialDelay = Math.min(
+          maxReconnectDelay,
+          baseDelay * Math.pow(2, reconnectAttemptsRef.current - 1)
+        )
+        
+        // Add some randomness (jitter) to prevent thundering herd
+        const jitter = Math.random() * 1000
+        const reconnectDelay = exponentialDelay + jitter
+        
+        // Update status instead of writing to terminal
+        updateStatus(`Connection lost. Reconnecting in ${Math.round(reconnectDelay/1000)} seconds...`, 'warning')
+        
+        log('info', `Scheduling reconnect in ${reconnectDelay/1000}s (attempt ${reconnectAttemptsRef.current} of ${maxReconnectAttempts})`)
+        
+        // Schedule reconnection
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          reconnectTimeoutRef.current = null
+          
+          // Limit total reconnection attempts using maxReconnectAttempts
+          if (reconnectAttemptsRef.current > maxReconnectAttempts) {
+            log('warn', `Maximum reconnection attempts (${maxReconnectAttempts}) reached`)
+            updateStatus('Maximum reconnection attempts reached. Please refresh the page.', 'error')
+            // Don't release the lock here - we're done trying
+            return
+          }
+          
+          // Only try to reconnect if we're not already connected
+          connectWebSocket()
+        }, reconnectDelay)
+      }
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error)
+        // Log additional connection details that could help diagnose the issue
+        log('error', `WebSocket error - URL: ${wsUrl}, readyState: ${
+          ws.readyState === WebSocket.CONNECTING ? 'CONNECTING' : 
+          ws.readyState === WebSocket.OPEN ? 'OPEN' : 
+          ws.readyState === WebSocket.CLOSING ? 'CLOSING' : 'CLOSED'
+        }`)
+        
+        // Try to get more error info if available
+        const errorDetails = error instanceof Error ? error.message : 'Unknown error'
+        updateStatus(`Connection error: ${errorDetails}. See console for details.`, 'error')
+        
+        // No need to close the socket here, the onclose handler will fire
+        // The onclose handler will release the connectionLock
+      }
+      
+      setSocket(ws)
+    } catch (error) {
+      log('error', `Failed to create WebSocket: ${error}`)
+      updateStatus(`Failed to connect: ${error}`, 'error')
+      
+      // Clear the global timeout if it exists
+      if (globalConnectionTimeoutRef.current !== null) {
+        window.clearTimeout(globalConnectionTimeoutRef.current)
+        globalConnectionTimeoutRef.current = null
+      }
+      
+      // Release the connection lock on failure
+      connectionLockRef.current = false
+      
+      // Increment attempts for backoff logic
+      reconnectAttemptsRef.current++
+      
+      // Calculate delay: 1s, 2s, 4s, 8s, etc. with exponential backoff
+      const baseDelay = 1000 // Start with 1 second
+      const exponentialDelay = Math.min(
+        maxReconnectDelay,
+        baseDelay * Math.pow(2, reconnectAttemptsRef.current - 1)
+      )
+      
+      // Add jitter to prevent thundering herd
+      const jitter = Math.random() * 1000
+      const retryDelay = exponentialDelay + jitter
+      
+      log('info', `Will retry in ${retryDelay/1000}s (attempt ${reconnectAttemptsRef.current} of ${MAX_CONNECTION_ATTEMPTS})`)
+      
+      // Schedule a retry after the calculated delay, respecting max attempts
+      if (reconnectAttemptsRef.current < MAX_CONNECTION_ATTEMPTS) {
+        // Use the constant instead of the old maxReconnectAttempts
+        reconnectTimeoutRef.current = window.setTimeout(() => {
+          reconnectTimeoutRef.current = null
+          connectWebSocket()
+        }, retryDelay)
+      } else {
+        log('warn', 'Maximum reconnection attempts reached, stopping reconnection')
+        updateStatus('Connection failed. Please refresh the page to try again.', 'error')
+      }
+    }
+  }, [
+    socket, 
+    terminal, 
+    instanceName, 
+    onConnectionChange, 
+    onMessageReceived, 
+    sendResize, 
+    startPingInterval,
+    hashContent,
+    updateStatus,
+    log,
+    checkInstanceExists,
+    maxReconnectDelay,
+    cleanupExistingConnections,
+    MAX_CONNECTION_ATTEMPTS,
+    GLOBAL_CONNECTION_TIMEOUT
+  ])
+  
+  // Connect to WebSocket
+  useEffect(() => {
+    if (!terminal || !instanceName) return
+    
+    // Connect on mount
+    connectWebSocket()
+    
+    // Cleanup on unmount with improved resource cleanup and guaranteed release
+    return () => {
+      log('info', `Comprehensive cleanup for Terminal component (instance: ${instanceName})`)
+      
+      // Create a cleanup controller to track completion
+      const controller = new AbortController();
+      const signal = controller.signal;
+      const MAX_CLEANUP_TIME = 2000; // 2 seconds max for cleanup
+      
+      // Set a hard timeout to ensure cleanup doesn't hang
+      const hardTimeoutId = setTimeout(() => {
+        log('warn', `Forcing cleanup completion after ${MAX_CLEANUP_TIME}ms timeout`);
+        controller.abort();
+      }, MAX_CLEANUP_TIME);
+      
+      // Create a proper cleanup sequence that chains operations
+      const executeCleanup = async () => {
+        try {
+          // Step 1: Stop all timers and intervals
+          log('info', 'Cleaning up timers and intervals');
+          
+          // Clear global connection timeout if active
+          if (globalConnectionTimeoutRef.current !== null) {
+            window.clearTimeout(globalConnectionTimeoutRef.current);
+            globalConnectionTimeoutRef.current = null;
+            log('info', 'Cleared global connection timeout');
+          }
+          
+          // Clear any pending reconnect timeouts immediately
+          if (reconnectTimeoutRef.current !== null) {
+            window.clearTimeout(reconnectTimeoutRef.current);
+            reconnectTimeoutRef.current = null;
+            log('info', 'Cleared reconnect timeout');
+          }
+          
+          // Clear ping interval immediately
+          if (pingIntervalRef.current) {
+            clearInterval(pingIntervalRef.current);
+            pingIntervalRef.current = null;
+            log('info', 'Cleared ping interval');
+          }
+          
+          // Step 2: Reset connection state
+          connectionLockRef.current = false;
+          reconnectAttemptsRef.current = 0;
+          log('info', 'Reset connection state variables');
+          
+          // Step 3: Close WebSocket properly if it exists
+          if (socket) {
+            log('info', `Closing WebSocket for instance ${instanceName} (state: ${
+              socket.readyState === WebSocket.CONNECTING ? 'CONNECTING' :
+              socket.readyState === WebSocket.OPEN ? 'OPEN' :
+              socket.readyState === WebSocket.CLOSING ? 'CLOSING' : 'CLOSED'
+            })`);
+            
+            // Skip clean close for already closing/closed sockets
+            if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+              log('info', 'Socket already closing/closed, skipping close message');
+            }
+            // For connecting sockets, just close without message
+            else if (socket.readyState === WebSocket.CONNECTING) {
+              try {
+                log('info', 'Closing connecting socket without message');
+                socket.close(1000, "Terminal component unmounting");
+              } catch (err) {
+                log('error', `Error closing connecting socket: ${err}`);
+              }
+            }
+            // For open sockets, try graceful shutdown with message first
+            else if (socket.readyState === WebSocket.OPEN) {
+              try {
+                // Send close notification to server
+                log('info', 'Sending close notification to server');
+                
+                // Try both message formats to ensure compatibility
+                // First JSON format
+                const closeMsg = {
+                  type: "close",
+                  isCommand: true,
+                  content: "close"
+                };
+                
+                socket.send(JSON.stringify(closeMsg));
+                
+                // Also try binary format with type prefix
+                const binaryCloseMsg = new Uint8Array([CloseMessage]);
+                socket.send(binaryCloseMsg);
+                
+                // Wait a brief moment for messages to send
+                await new Promise(resolve => {
+                  const timeout = setTimeout(resolve, 100);
+                  // Clean up timeout if aborted
+                  signal.addEventListener('abort', () => {
+                    clearTimeout(timeout);
+                    resolve(undefined);
+                  });
+                });
+                
+                if (signal.aborted) {
+                  log('warn', 'Cleanup aborted during close message send delay');
+                  throw new Error('Cleanup aborted');
+                }
+                
+                // Now close the socket
+                log('info', 'Closing socket after sending notifications');
+                socket.close(1000, "Terminal component unmounting gracefully");
+              } catch (err) {
+                log('warn', `Error in graceful socket close: ${err}, forcing close`);
+                try {
+                  socket.close(1000, "Terminal unmounting with errors");
+                } catch (closeErr) {
+                  log('error', `Error force-closing socket: ${closeErr}`);
+                }
+              }
+            }
+            
+            // Update connection state
+            setConnected(false);
+            if (onConnectionChange) onConnectionChange(false);
+            
+            // Add abort listener to detect forced cleanup
+            signal.addEventListener('abort', () => {
+              log('warn', 'Forced cleanup during socket close');
+              setConnected(false);
+              if (onConnectionChange) onConnectionChange(false);
+            });
+          } else {
+            log('info', 'No socket to close');
+          }
+          
+          // Step 4: Clear socket reference
+          setSocket(null);
+          
+          // Step 5: Clear content hash tracking for memory cleanup
+          if (processedContentHashRef.current) {
+            processedContentHashRef.current.clear();
+            log('info', 'Cleared content hash tracking');
+          }
+          
+          log('info', 'Terminal component cleanup completed successfully');
+        } catch (err) {
+          log('error', `Error during terminal cleanup: ${err}`);
+        } finally {
+          // Always clear the hard timeout
+          clearTimeout(hardTimeoutId);
+        }
+      };
+      
+      // Start cleanup process without waiting for it to complete
+      // This allows the component to unmount immediately
+      executeCleanup().catch(err => {
+        log('error', `Unhandled error in cleanup: ${err}`);
+      });
+    }
+  }, [
+    terminal, 
+    instanceName, 
+    connectWebSocket,
+    socket,
+    sendMessage,
+    onConnectionChange
+  ])
+  
+  // Define CSS for status indicator
+  const statusStyles = {
+    info: {
+      backgroundColor: '#2c2c2c',
+      color: '#ccc',
+      border: '1px solid #444'
+    },
+    warning: {
+      backgroundColor: '#3a2e00',
+      color: '#ffcc00',
+      border: '1px solid #664d00'
+    },
+    error: {
+      backgroundColor: '#3a0000',
+      color: '#ff5555',
+      border: '1px solid #660000'
+    },
+    success: {
+      backgroundColor: '#00360c',
+      color: '#4cff83',
+      border: '1px solid #006d18'
+    }
+  }
+  
+  // Status indicator styles
+  const statusContainerStyle = {
+    padding: '4px 8px',
+    fontSize: '12px',
+    borderRadius: '4px',
+    margin: '4px 0',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as 'nowrap',
+    ...statusStyles[statusClass as keyof typeof statusStyles]
+  }
+  
+  return (
+    <div className="terminal-wrapper" style={{ 
+      width: '100%', 
+      height: '100%',
+      display: 'flex',
+      flexDirection: 'column' 
+    }}>
+      {/* Status indicator */}
+      <div 
+        ref={statusRef} 
+        className={`terminal-status ${statusClass}`}
+        style={statusContainerStyle}
+      >
+        {statusMessage}
+      </div>
+      
+      {/* Terminal container */}
+      <div
+        ref={terminalRef}
+        className="xterm-container"
+        style={{ 
+          width: '100%', 
+          height: 'calc(100% - 30px)', // Reserve space for status
+          border: '1px solid #444',
+          borderRadius: '4px'
+        }}
+      />
+    </div>
+  )
+}
+
+export default Terminal

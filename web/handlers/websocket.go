@@ -4,9 +4,11 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/web/types"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -55,15 +57,18 @@ func sanitizeAnsiContent(content string) string {
 // WebSocketHandler handles terminal output streaming via WebSocket with bidirectional communication.
 func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInterface) http.HandlerFunc {
 	upgrader := websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
+		ReadBufferSize:  4096,  // Increased for better performance
+		WriteBufferSize: 4096,  // Increased for better performance
 		CheckOrigin: func(r *http.Request) bool {
-			// TODO: Implement proper origin checking
+			// Always allow all origins for development
 			return true
 		},
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Mutex for websocket writes - declared early as it's used in multiple goroutines
+		var writeMu sync.Mutex
+
 		// Add detailed connection logging
 		log.FileOnlyInfoLog.Printf("WebSocket: New connection request from %s for path %s", r.RemoteAddr, r.URL.Path)
 		
@@ -75,7 +80,12 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		}
 		log.FileOnlyInfoLog.Printf("WebSocket: Connection request for instance: '%s'", instanceTitle)
 
-		// Verify instance exists
+		// Use context for coordinated shutdown of all goroutines
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel() // Ensure all goroutines are cleaned up when handler returns
+
+		// Verify instance exists - Note: We will repeat this check later to ensure 
+		// instance is still valid when processing commands
 		instance, err := findInstanceByTitle(storage, instanceTitle)
 		if err != nil {
 			log.FileOnlyErrorLog.Printf("WebSocket: Instance '%s' not found: %v", instanceTitle, err)
@@ -99,15 +109,60 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		}
 		log.FileOnlyInfoLog.Printf("WebSocket: Using privileges=%s for instance '%s'", privileges, instanceTitle)
 
-		// Upgrade HTTP connection to WebSocket
-		log.FileOnlyInfoLog.Printf("WebSocket: Upgrading connection for instance '%s'", instanceTitle)
+		// Upgrade HTTP connection to WebSocket with detailed diagnostics
+		log.FileOnlyInfoLog.Printf("WebSocket: Upgrading connection for instance '%s', headers: %v", instanceTitle, r.Header)
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.FileOnlyErrorLog.Printf("WebSocket upgrade failed for '%s': %v", instanceTitle, err)
+			log.FileOnlyErrorLog.Printf("WebSocket upgrade failed for '%s': %v (Remote: %s, URL: %s)", 
+				instanceTitle, err, r.RemoteAddr, r.URL.String())
+			// Log the request headers to help diagnose issues
+			log.FileOnlyErrorLog.Printf("WebSocket upgrade failed headers: %v", r.Header)
+			
+			// Return a clearer error message to the client
+			http.Error(w, fmt.Sprintf("WebSocket upgrade failed: %v", err), http.StatusInternalServerError)
 			return
 		}
-		log.FileOnlyInfoLog.Printf("WebSocket: Connection successfully upgraded for '%s'", instanceTitle)
+		log.FileOnlyInfoLog.Printf("WebSocket: Connection successfully upgraded for '%s' from %s", 
+			instanceTitle, r.RemoteAddr)
 		defer conn.Close()
+		
+		// Set ping handler to keep connection alive using standard WebSocket protocol
+		conn.SetPongHandler(func(appData string) error {
+			log.FileOnlyInfoLog.Printf("WebSocket: Received standard pong from client for '%s', appData: %s", 
+				instanceTitle, appData)
+			// Extend read deadline on successful pong
+			err := conn.SetReadDeadline(time.Now().Add(70 * time.Second))
+			if err != nil {
+				log.FileOnlyErrorLog.Printf("WebSocket: Error setting read deadline in pong handler for '%s': %v", 
+					instanceTitle, err)
+				return err
+			}
+			return nil
+		})
+		
+		// Set initial read deadline with better error handling
+		if err := conn.SetReadDeadline(time.Now().Add(70 * time.Second)); err != nil {
+			log.FileOnlyErrorLog.Printf("WebSocket: Error setting initial read deadline for '%s': %v",
+				instanceTitle, err)
+			return
+		}
+
+		// Also set a write deadline for each write operation
+		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			log.FileOnlyErrorLog.Printf("WebSocket: Error setting initial write deadline for '%s': %v",
+				instanceTitle, err)
+			return
+		}
+		
+		// Set close handler for better debugging
+		conn.SetCloseHandler(func(code int, text string) error {
+			log.FileOnlyInfoLog.Printf("WebSocket: Client initiated close for '%s': code=%d, reason='%s'", 
+				instanceTitle, code, text)
+			// Cancel context to signal all goroutines to terminate
+			cancel()
+			// Call the default close handler
+			return nil
+		})
 
 		// Get requested format
 		format := r.URL.Query().Get("format")
@@ -129,10 +184,68 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		// The format parameter is for clients that *cannot* handle ANSI directly.
 		// For a typical web terminal UI, `format` should implicitly be "ansi".
 
-		// Create update channel
+		// Create update channel with context for proper cleanup
 		log.FileOnlyInfoLog.Printf("WebSocket: Subscribing to updates for instance '%s'", instanceTitle)
 		updates := monitor.Subscribe(instanceTitle)
 		defer monitor.Unsubscribe(instanceTitle, updates)
+
+		// Set up instance validity checking
+		instanceValidityTicker := time.NewTicker(5 * time.Second)
+		defer instanceValidityTicker.Stop()
+
+		// Create a goroutine to periodically check if instance still exists
+		instanceValid := true
+		var instanceValidMu sync.RWMutex
+		go func() {
+			// Add panic recovery to prevent server crashes
+			defer func() {
+				if r := recover(); r != nil {
+					log.FileOnlyErrorLog.Printf("WebSocket: PANIC in instance validity checker for '%s': %v\n%s", 
+						instanceTitle, r, debug.Stack())
+					// Attempt to cancel context to notify other goroutines
+					cancel()
+				}
+			}()
+			
+			for {
+				select {
+				case <-instanceValidityTicker.C:
+					// Check if instance still exists in storage
+					_, err := findInstanceByTitle(storage, instanceTitle)
+					instanceValidMu.Lock()
+					instanceValid = (err == nil)
+					if !instanceValid {
+						log.FileOnlyErrorLog.Printf("WebSocket: Instance '%s' no longer exists, marking as invalid", instanceTitle)
+					}
+					instanceValidMu.Unlock()
+					
+					if !instanceValid {
+						// Send a termination message to the client - use write mutex for thread safety
+						writeMu.Lock()
+						_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+						err := conn.WriteJSON(map[string]interface{}{
+							"type":          "instance_terminated",
+							"instance_title": instanceTitle,
+							"message":       "Instance no longer exists",
+							"timestamp":     time.Now(),
+						})
+						writeMu.Unlock()
+						
+						if err != nil {
+							log.FileOnlyErrorLog.Printf("WebSocket: Error sending termination message for '%s': %v", 
+								instanceTitle, err)
+						}
+						
+						// Cancel the context to signal shutdown to all goroutines
+						cancel()
+						return
+					}
+				case <-ctx.Done():
+					log.FileOnlyInfoLog.Printf("WebSocket: Context cancelled for instance validity checker '%s'", instanceTitle)
+					return
+				}
+			}
+		}()
 
 		// Send initial content if available
 		initialContent, exists := monitor.GetContent(instanceTitle)
@@ -180,9 +293,28 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 			log.FileOnlyInfoLog.Printf("WebSocket: Sending initial update for '%s', content length: %d, status: %s",
 				instanceTitle, len(formattedContent), string(instance.Status))
 			
-			// Send with timeout protection
+			// Update write deadline before sending
+			if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				log.FileOnlyErrorLog.Printf("WebSocket: Error setting write deadline for initial update for '%s': %v",
+					instanceTitle, err)
+				return
+			}
+			
+			// Send with timeout protection using context
 			writeErrorChan := make(chan error, 1)
+			writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
+			defer writeCancel()
+			
 			go func() {
+				// Add panic recovery for initial update sender
+				defer func() {
+					if r := recover(); r != nil {
+						log.FileOnlyErrorLog.Printf("WebSocket: PANIC in initial update sender for '%s': %v\n%s", 
+							instanceTitle, r, debug.Stack())
+						writeErrorChan <- fmt.Errorf("panic in initial update sender: %v", r)
+					}
+				}()
+				
 				writeErrorChan <- conn.WriteJSON(initialUpdate)
 			}()
 			
@@ -193,8 +325,8 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 					return
 				}
 				log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent initial update for '%s'", instanceTitle)
-			case <-time.After(5 * time.Second):
-				log.FileOnlyErrorLog.Printf("WebSocket: Timeout sending initial WebSocket update for '%s'", instanceTitle)
+			case <-writeCtx.Done():
+				log.FileOnlyErrorLog.Printf("WebSocket: Timeout or context cancelled sending initial WebSocket update for '%s'", instanceTitle)
 				return
 			}
 		} else {
@@ -207,6 +339,13 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 				Timestamp:     time.Now(),
 				Status:        string(instance.Status),
 				HasPrompt:     false,
+			}
+			
+			// Update write deadline before sending
+			if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				log.FileOnlyErrorLog.Printf("WebSocket: Error setting write deadline for empty update for '%s': %v",
+					instanceTitle, err)
+				return
 			}
 			
 			log.FileOnlyInfoLog.Printf("WebSocket: Sending empty placeholder update for '%s'", instanceTitle)
@@ -225,6 +364,14 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 			"fontFamily": "Menlo, Monaco, 'Courier New', monospace",
 			"fontSize":   14,
 		}
+		
+		// Update write deadline before sending
+		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			log.FileOnlyErrorLog.Printf("WebSocket: Error setting write deadline for config for '%s': %v",
+				instanceTitle, err)
+			return
+		}
+		
 		log.FileOnlyInfoLog.Printf("WebSocket: Sending terminal configuration for '%s'", instanceTitle)
 		if err := conn.WriteJSON(config); err != nil {
 			log.FileOnlyErrorLog.Printf("WebSocket: Error sending config for '%s': %v", instanceTitle, err)
@@ -232,108 +379,296 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		}
 		log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent terminal configuration for '%s'", instanceTitle)
 
-		// Mutex for websocket writes
-		var writeMu sync.Mutex
+		// WebSocket write operations handled above
 
 		// Handle incoming messages from client (bidirectional communication)
 		if privileges == "read-write" {
 			log.FileOnlyInfoLog.Printf("WebSocket: Starting read-write handler for '%s'", instanceTitle)
 			go func() {
+				// Add panic recovery for read-write handler
+				defer func() {
+					if r := recover(); r != nil {
+						log.FileOnlyErrorLog.Printf("WebSocket: PANIC in read-write handler for '%s': %v\n%s", 
+							instanceTitle, r, debug.Stack())
+						// Try to notify client of error if possible
+						writeMu.Lock()
+						_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+						_ = conn.WriteJSON(map[string]interface{}{
+							"type":  "error_response",
+							"error": "Internal server error occurred, please try reconnecting",
+						})
+						writeMu.Unlock()
+						// Notify other goroutines to terminate
+						cancel()
+					}
+				}()
+				
 				for {
-					// Read message from client
-					_, message, err := conn.ReadMessage()
-					if err != nil {
-						if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-							log.FileOnlyErrorLog.Printf("WebSocket: Read error for '%s': %v", instanceTitle, err)
-						}
+					select {
+					case <-ctx.Done():
+						log.FileOnlyInfoLog.Printf("WebSocket: Context cancelled, stopping read handler for '%s'", instanceTitle)
 						return
-					}
-					log.FileOnlyInfoLog.Printf("WebSocket: Received message from client for '%s', length: %d",
-						instanceTitle, len(message))
-
-					// Parse message
-					var input types.TerminalInput
-					if err := json.Unmarshal(message, &input); err != nil {
-						log.ErrorLog.Printf("Error parsing WebSocket input: %v", err)
-						
-						writeMu.Lock()
-						conn.WriteJSON(map[string]string{"error": "Invalid message format"})
-						writeMu.Unlock()
-						continue
-					}
-
-					// Handle different types of input
-					if input.IsCommand {
-						// Handle special commands
-						cmd := input.Content
-						log.FileOnlyInfoLog.Printf("WebSocket: Received command: %s for '%s'", cmd, instanceTitle)
-						var response map[string]interface{}
-
-						switch {
-						case cmd == "get_tasks":
-							// Get tasks for terminal
-							log.FileOnlyInfoLog.Printf("WebSocket: Processing get_tasks command for '%s'", instanceTitle)
-							tasks, err := monitor.GetTasks(instanceTitle)
-							if err != nil {
-								log.ErrorLog.Printf("Error getting tasks: %v", err)
-								response = map[string]interface{}{
-									"type":  "command_response",
-									"command": "get_tasks",
-									"success": false,
-									"error": err.Error(),
-								}
-							} else {
-								log.FileOnlyInfoLog.Printf("WebSocket: Found %d tasks for '%s'", len(tasks), instanceTitle)
-								response = map[string]interface{}{
-									"type":  "command_response",
-									"command": "get_tasks",
-									"success": true,
-									"tasks": tasks,
-								}
-							}
-
-						case cmd == "clear_terminal":
-							// Clear terminal not supported directly, just acknowledge
-							log.FileOnlyInfoLog.Printf("WebSocket: Clear terminal command not supported for '%s'", instanceTitle)
-							response = map[string]interface{}{
-								"type":    "command_response",
-								"command": "clear_terminal",
-								"success": false,
-								"error":   "Clear terminal not supported directly",
-							}
-
-						default:
-							// Unknown command
-							log.FileOnlyInfoLog.Printf("WebSocket: Unknown command: %s for '%s'", cmd, instanceTitle)
-							response = map[string]interface{}{
-								"type":    "command_response",
-								"command": cmd,
-								"success": false,
-								"error":   "Unknown command",
-							}
-						}
-
-						writeMu.Lock()
-						log.FileOnlyInfoLog.Printf("WebSocket: Sending command response for '%s'", instanceTitle)
-						conn.WriteJSON(response)
-						writeMu.Unlock()
-					} else {
-						// Regular terminal input - send to terminal
-						log.FileOnlyInfoLog.Printf("WebSocket: Received terminal input for '%s': %s",
-							instanceTitle, input.Content)
-						err := monitor.SendInput(instanceTitle, input.Content)
+					default:
+						// Read message from client with timeout
+						err := conn.SetReadDeadline(time.Now().Add(70 * time.Second))
 						if err != nil {
-							log.FileOnlyErrorLog.Printf("WebSocket: Error sending input to terminal for '%s': %v", instanceTitle, err)
-							
+							log.FileOnlyErrorLog.Printf("WebSocket: Error setting read deadline for '%s': %v", instanceTitle, err)
+							return
+						}
+						
+						messageType, message, err := conn.ReadMessage()
+						if err != nil {
+							if websocket.IsUnexpectedCloseError(err, 
+								websocket.CloseGoingAway, 
+								websocket.CloseNormalClosure, 
+								websocket.CloseAbnormalClosure) {
+								log.FileOnlyErrorLog.Printf("WebSocket: Unexpected read error for '%s': %v", instanceTitle, err)
+							} else if websocket.IsCloseError(err, 
+								websocket.CloseNormalClosure, 
+								websocket.CloseGoingAway) {
+								log.FileOnlyInfoLog.Printf("WebSocket: Client closed connection for '%s': %v", instanceTitle, err)
+							} else {
+								// Other types of errors
+								log.FileOnlyErrorLog.Printf("WebSocket: Read error for '%s': %v (error type: %T)", 
+									instanceTitle, err, err)
+							}
+							cancel() // Signal all goroutines to terminate
+							return
+						}
+						
+						// More detailed logging about message received
+						msgTypeStr := "unknown"
+						switch messageType {
+						case websocket.TextMessage:
+							msgTypeStr = "text"
+						case websocket.BinaryMessage:
+							msgTypeStr = "binary"
+						case websocket.CloseMessage:
+							msgTypeStr = "close"
+							cancel() // Signal all goroutines to terminate
+							return
+						case websocket.PingMessage:
+							msgTypeStr = "ping"
+						case websocket.PongMessage:
+							msgTypeStr = "pong"
+						}
+						
+						log.FileOnlyInfoLog.Printf("WebSocket: Received %s message from client for '%s', length: %d",
+							msgTypeStr, instanceTitle, len(message))
+
+						// Check if instance is still valid before processing message
+						instanceValidMu.RLock()
+						isValid := instanceValid
+						instanceValidMu.RUnlock()
+						
+						if !isValid {
+							log.FileOnlyWarningLog.Printf("WebSocket: Refusing to process message for '%s' - instance no longer valid", instanceTitle)
 							writeMu.Lock()
-							conn.WriteJSON(map[string]string{
-								"type":  "input_response",
-								"error": fmt.Sprintf("Failed to send input to '%s': %v", instanceTitle, err),
+							// Update write deadline before sending
+							conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+							conn.WriteJSON(map[string]interface{}{
+								"type":     "error_response",
+								"error":    "Instance no longer exists",
+								"instance": instanceTitle,
 							})
 							writeMu.Unlock()
+							continue
+						}
+
+						// Parse message
+						var input types.TerminalInput
+						if err := json.Unmarshal(message, &input); err != nil {
+							log.ErrorLog.Printf("Error parsing WebSocket input: %v", err)
+							
+							writeMu.Lock()
+							// Update write deadline before sending
+							conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+							conn.WriteJSON(map[string]string{"error": "Invalid message format"})
+							writeMu.Unlock()
+							continue
+						}
+
+						// Handle different types of input
+						if input.IsCommand {
+							// Handle special commands
+							cmd := input.Content
+							log.FileOnlyInfoLog.Printf("WebSocket: Received command: %s for '%s'", cmd, instanceTitle)
+							var response map[string]interface{}
+
+							// Re-verify instance exists before executing command
+							_, err := findInstanceByTitle(storage, instanceTitle)
+							if err != nil {
+								log.FileOnlyErrorLog.Printf("WebSocket: Instance '%s' not found when processing command: %v", instanceTitle, err)
+								response = map[string]interface{}{
+									"type":     "command_response",
+									"command":  cmd,
+									"success":  false,
+									"error":    fmt.Sprintf("Instance '%s' not found", instanceTitle),
+								}
+								
+								writeMu.Lock()
+								// Update write deadline before sending
+								conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+								conn.WriteJSON(response)
+								writeMu.Unlock()
+								
+								// Mark instance as invalid to trigger shutdown
+								instanceValidMu.Lock()
+								instanceValid = false
+								instanceValidMu.Unlock()
+								
+								continue
+							}
+
+							switch {
+							case cmd == "get_tasks":
+								// Get tasks for terminal
+								log.FileOnlyInfoLog.Printf("WebSocket: Processing get_tasks command for '%s'", instanceTitle)
+								tasks, err := monitor.GetTasks(instanceTitle)
+								if err != nil {
+									log.ErrorLog.Printf("Error getting tasks: %v", err)
+									response = map[string]interface{}{
+										"type":  "command_response",
+										"command": "get_tasks",
+										"success": false,
+										"error": err.Error(),
+									}
+								} else {
+									log.FileOnlyInfoLog.Printf("WebSocket: Found %d tasks for '%s'", len(tasks), instanceTitle)
+									response = map[string]interface{}{
+										"type":  "command_response",
+										"command": "get_tasks",
+										"success": true,
+										"tasks": tasks,
+									}
+								}
+
+							case cmd == "resize":
+								// Handle resize command
+								cols, colsOk := input.Cols.(float64)
+								rows, rowsOk := input.Rows.(float64)
+								
+								if colsOk && rowsOk && cols > 0 && rows > 0 {
+									log.FileOnlyInfoLog.Printf("WebSocket: Received resize command for '%s': %dx%d", 
+										instanceTitle, int(cols), int(rows))
+									
+									// Try to resize terminal if applicable
+									if err := monitor.ResizeTerminal(instanceTitle, int(cols), int(rows)); err != nil {
+										log.FileOnlyErrorLog.Printf("WebSocket: Error resizing terminal for '%s': %v", instanceTitle, err)
+										response = map[string]interface{}{
+											"type":    "command_response",
+											"command": "resize",
+											"success": false,
+											"error":   fmt.Sprintf("Failed to resize terminal: %v", err),
+										}
+									} else {
+										log.FileOnlyInfoLog.Printf("WebSocket: Successfully resized terminal for '%s'", instanceTitle)
+										response = map[string]interface{}{
+											"type":    "command_response",
+											"command": "resize",
+											"success": true,
+										}
+									}
+								} else {
+									log.FileOnlyWarningLog.Printf("WebSocket: Invalid resize dimensions for '%s': cols=%v, rows=%v", 
+										instanceTitle, input.Cols, input.Rows)
+									response = map[string]interface{}{
+										"type":    "command_response",
+										"command": "resize",
+										"success": false,
+										"error":   "Invalid dimensions",
+									}
+								}
+								
+							case cmd == "clear_terminal":
+								// Clear terminal not supported directly, just acknowledge
+								log.FileOnlyInfoLog.Printf("WebSocket: Clear terminal command not supported for '%s'", instanceTitle)
+								response = map[string]interface{}{
+									"type":    "command_response",
+									"command": "clear_terminal",
+									"success": false,
+									"error":   "Clear terminal not supported directly",
+								}
+
+							default:
+								// Unknown command
+								log.FileOnlyInfoLog.Printf("WebSocket: Unknown command: %s for '%s'", cmd, instanceTitle)
+								response = map[string]interface{}{
+									"type":    "command_response",
+									"command": cmd,
+									"success": false,
+									"error":   "Unknown command",
+								}
+							}
+
+							writeMu.Lock()
+							log.FileOnlyInfoLog.Printf("WebSocket: Sending command response for '%s'", instanceTitle)
+							// Update write deadline before sending
+							conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+							conn.WriteJSON(response)
+							writeMu.Unlock()
 						} else {
-							log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent input to terminal for '%s'",
-								instanceTitle)
+							// Regular terminal input - send to terminal
+							log.FileOnlyInfoLog.Printf("WebSocket: Received terminal input for '%s': %s",
+								instanceTitle, input.Content)
+							
+							// Re-verify instance exists before sending input
+							_, err := findInstanceByTitle(storage, instanceTitle)
+							if err != nil {
+								log.FileOnlyErrorLog.Printf("WebSocket: Instance '%s' not found when sending input: %v", instanceTitle, err)
+								writeMu.Lock()
+								// Update write deadline before sending
+								conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+								conn.WriteJSON(map[string]interface{}{
+									"type":     "input_response",
+									"success":  false,
+									"error":    fmt.Sprintf("Instance '%s' not found", instanceTitle),
+								})
+								writeMu.Unlock()
+								
+								// Mark instance as invalid to trigger shutdown
+								instanceValidMu.Lock()
+								instanceValid = false
+								instanceValidMu.Unlock()
+								
+								continue
+							}
+							
+							err = monitor.SendInput(instanceTitle, input.Content)
+							if err != nil {
+								log.FileOnlyErrorLog.Printf("WebSocket: Error sending input to terminal for '%s': %v", instanceTitle, err)
+								
+								writeMu.Lock()
+								// Update write deadline before sending
+								conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+								conn.WriteJSON(map[string]interface{}{
+									"type":  "input_response",
+									"success": false,
+									"error": fmt.Sprintf("Failed to send input to '%s': %v", instanceTitle, err),
+								})
+								writeMu.Unlock()
+								
+								// If the error indicates instance not found, mark it as invalid
+								if strings.Contains(err.Error(), "instance not found") {
+									log.FileOnlyErrorLog.Printf("WebSocket: Marking instance '%s' as invalid after input failure", instanceTitle)
+									instanceValidMu.Lock()
+									instanceValid = false
+									instanceValidMu.Unlock()
+								}
+							} else {
+								log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent input to terminal for '%s'",
+									instanceTitle)
+								
+								// Optionally send success response
+								writeMu.Lock()
+								// Update write deadline before sending
+								conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+								conn.WriteJSON(map[string]interface{}{
+									"type":     "input_response",
+									"success":  true,
+								})
+								writeMu.Unlock()
+							}
 						}
 					}
 				}
@@ -345,22 +680,48 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		// Handle ping messages to keep connection alive
 		log.FileOnlyInfoLog.Printf("WebSocket: Starting ping handler for '%s'", instanceTitle)
 		go func() {
+			// Add panic recovery for ping handler
+			defer func() {
+				if r := recover(); r != nil {
+					log.FileOnlyErrorLog.Printf("WebSocket: PANIC in ping handler for '%s': %v\n%s", 
+						instanceTitle, r, debug.Stack())
+					// Attempt to cancel context to notify other goroutines
+					cancel()
+				}
+			}()
+			
 			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
 
 			for {
 				select {
 				case <-ticker.C:
+					// Check if instance is still valid
+					instanceValidMu.RLock()
+					isValid := instanceValid
+					instanceValidMu.RUnlock()
+					
+					if !isValid {
+						log.FileOnlyInfoLog.Printf("WebSocket: Stopping ping handler for '%s' - instance no longer valid", instanceTitle)
+						return
+					}
+					
 					writeMu.Lock()
 					log.FileOnlyInfoLog.Printf("WebSocket: Sending ping to '%s'", instanceTitle)
+					// Update write deadline before sending
+					conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 					if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 						log.FileOnlyErrorLog.Printf("WebSocket: Ping failed for '%s': %v", instanceTitle, err)
 						writeMu.Unlock()
+						cancel() // Signal all goroutines to terminate
 						return
 					}
 					writeMu.Unlock()
 				case <-monitor.Done():
 					log.FileOnlyInfoLog.Printf("WebSocket: Monitor done, closing ping handler for '%s'", instanceTitle)
+					return
+				case <-ctx.Done():
+					log.FileOnlyInfoLog.Printf("WebSocket: Context cancelled, stopping ping handler for '%s'", instanceTitle)
 					return
 				}
 			}
@@ -369,51 +730,104 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		// Listen for updates and send to client
 		log.FileOnlyInfoLog.Printf("WebSocket: Starting update listener for '%s'", instanceTitle)
 		updateCounter := 0
-		for update := range updates {
-			updateCounter++
-			log.FileOnlyInfoLog.Printf("WebSocket: Received update #%d for '%s', content length: %d",
-				updateCounter, update.InstanceTitle, len(update.Content))
-			
-			// Skip empty updates
-			if len(update.Content) == 0 {
-				log.FileOnlyWarningLog.Printf("WebSocket: Skipping empty update #%d for '%s'",
-					updateCounter, instanceTitle)
-				continue
-			}
-			
-			// Apply format conversion if needed for non-ANSI clients
-			// If client is an ANSI terminal (format="ansi" or default), send raw.
-			if format == "html" {
-				update.Content = convertAnsiToHtml(update.Content)
-				log.FileOnlyInfoLog.Printf("WebSocket: Converted update to HTML format for '%s'", instanceTitle)
-			} else if format == "text" {
-				update.Content = stripAnsi(update.Content)
-				log.FileOnlyInfoLog.Printf("WebSocket: Converted update to plain text format for '%s'", instanceTitle)
-			} else {
-				// For raw ANSI mode, sanitize the content to ensure complete sequences
-				update.Content = sanitizeAnsiContent(update.Content)
-				log.FileOnlyInfoLog.Printf("WebSocket: Sending sanitized raw ANSI content for '%s'", instanceTitle)
-			}
-			
-			// Make sure we still have content after conversion
-			if len(update.Content) == 0 {
-				log.FileOnlyWarningLog.Printf("WebSocket: Empty content after format conversion for '%s', adding placeholder",
-					instanceTitle)
-				update.Content = "[Terminal content unavailable]"
-			}
+		
+		updateLoop:
+		for {
+				select {
+				case update, ok := <-updates:
+					if !ok {
+						log.FileOnlyInfoLog.Printf("WebSocket: Updates channel closed for '%s'", instanceTitle)
+						break updateLoop
+					}
+					
+					updateCounter++
+					log.FileOnlyInfoLog.Printf("WebSocket: Received update #%d for '%s', content length: %d",
+						updateCounter, update.InstanceTitle, len(update.Content))
+					
+					// Check if context is already cancelled
+					if ctx.Err() != nil {
+						log.FileOnlyInfoLog.Printf("WebSocket: Context already cancelled, skipping update for '%s'", instanceTitle)
+						break updateLoop
+					}
+					
+					// Check if instance is still valid
+					instanceValidMu.RLock()
+					isValid := instanceValid
+					instanceValidMu.RUnlock()
+					
+					if !isValid {
+						log.FileOnlyInfoLog.Printf("WebSocket: Skipping update for '%s' - instance no longer valid", instanceTitle)
+						continue
+					}
+					
+					// Skip empty updates
+					if len(update.Content) == 0 {
+						log.FileOnlyWarningLog.Printf("WebSocket: Skipping empty update #%d for '%s'",
+						updateCounter, instanceTitle)
+					continue
+				}
+				
+				// Apply format conversion if needed for non-ANSI clients
+				// If client is an ANSI terminal (format="ansi" or default), send raw.
+				if format == "html" {
+					update.Content = convertAnsiToHtml(update.Content)
+					log.FileOnlyInfoLog.Printf("WebSocket: Converted update to HTML format for '%s'", instanceTitle)
+				} else if format == "text" {
+					update.Content = stripAnsi(update.Content)
+					log.FileOnlyInfoLog.Printf("WebSocket: Converted update to plain text format for '%s'", instanceTitle)
+				} else {
+					// For raw ANSI mode, sanitize the content to ensure complete sequences
+					update.Content = sanitizeAnsiContent(update.Content)
+					log.FileOnlyInfoLog.Printf("WebSocket: Sending sanitized raw ANSI content for '%s'", instanceTitle)
+				}
+				
+				// Make sure we still have content after conversion
+				if len(update.Content) == 0 {
+					log.FileOnlyWarningLog.Printf("WebSocket: Empty content after format conversion for '%s', adding placeholder",
+						instanceTitle)
+					update.Content = "[Terminal content unavailable]"
+				}
 
-			writeMu.Lock()
-			log.FileOnlyInfoLog.Printf("WebSocket: Sending update #%d to client for '%s', content length: %d",
-				updateCounter, instanceTitle, len(update.Content))
+				writeMu.Lock()
+				log.FileOnlyInfoLog.Printf("WebSocket: Sending update #%d to client for '%s', content length: %d",
+					updateCounter, instanceTitle, len(update.Content))
 
-			if err := conn.WriteJSON(update); err != nil {
-				log.FileOnlyErrorLog.Printf("WebSocket: Error sending update for '%s': %v", instanceTitle, err)
+				// Update write deadline before sending
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if err := conn.WriteJSON(update); err != nil {
+					log.FileOnlyErrorLog.Printf("WebSocket: Error sending update for '%s': %v", instanceTitle, err)
+					writeMu.Unlock()
+					cancel() // Signal all goroutines to terminate
+					break updateLoop
+				} else {
+					log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent update #%d for '%s'",
+						updateCounter, instanceTitle)
+				}
 				writeMu.Unlock()
-				break
-			} else {
-				log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent update #%d for '%s'",
-					updateCounter, instanceTitle)
+				
+			case <-ctx.Done():
+				log.FileOnlyInfoLog.Printf("WebSocket: Context cancelled, stopping update listener for '%s'", instanceTitle)
+				break updateLoop
 			}
+		}
+		
+		// Before exiting, send a termination notification if possible
+		instanceValidMu.RLock()
+		isValid := instanceValid 
+		instanceValidMu.RUnlock()
+		
+		if !isValid {
+			// Try to send a termination message
+			writeMu.Lock()
+			log.FileOnlyInfoLog.Printf("WebSocket: Sending termination notification for '%s'", instanceTitle)
+			// Update write deadline before sending
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			conn.WriteJSON(map[string]interface{}{
+				"type":          "instance_terminated",
+				"instance_title": instanceTitle,
+				"message":       "Instance no longer available",
+				"timestamp":     time.Now(),
+			})
 			writeMu.Unlock()
 		}
 		

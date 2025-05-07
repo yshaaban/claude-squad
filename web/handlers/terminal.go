@@ -3,6 +3,8 @@ package handlers
 import (
 	"claude-squad/log"
 	"claude-squad/session"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +24,7 @@ const (
 	PingMessage    = 'p' // Ping from client
 	PongMessage    = 'P' // Pong response
 	CloseMessage   = 'c' // Close connection
+	ClearMessage   = 'C' // Clear terminal
 )
 
 // ResizeData represents a terminal resize request
@@ -30,12 +33,21 @@ type ResizeData struct {
 	Rows    int `json:"rows"`
 }
 
+// ContentHash stores checksums of sent content to avoid duplicates
+type ContentHash struct {
+	hash      string
+	timestamp time.Time
+}
+
 // TerminalHandler handles websocket connections for terminals
 type TerminalHandler struct {
 	instances        *session.Storage
 	upgrader         websocket.Upgrader
 	activeInstances  map[string]*activeInstance
 	mutex            sync.Mutex
+	sentHashes       map[string][]ContentHash // Map of instance ID to content hashes
+	hashMutex        sync.RWMutex
+	hashCleanupTimer *time.Ticker
 }
 
 // activeInstance tracks an active websocket connection to an instance
@@ -48,7 +60,7 @@ type activeInstance struct {
 
 // NewTerminalHandler creates a new terminal handler
 func NewTerminalHandler(instances *session.Storage) *TerminalHandler {
-	return &TerminalHandler{
+	handler := &TerminalHandler{
 		instances: instances,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
@@ -58,7 +70,101 @@ func NewTerminalHandler(instances *session.Storage) *TerminalHandler {
 			},
 		},
 		activeInstances: make(map[string]*activeInstance),
+		sentHashes:      make(map[string][]ContentHash),
 	}
+
+	// Start a cleanup timer for the content hashes
+	handler.hashCleanupTimer = time.NewTicker(30 * time.Minute)
+	go func() {
+		for range handler.hashCleanupTimer.C {
+			handler.cleanupOldHashes()
+		}
+	}()
+
+	return handler
+}
+
+// cleanupOldHashes removes old content hashes to prevent memory leaks
+func (h *TerminalHandler) cleanupOldHashes() {
+	h.hashMutex.Lock()
+	defer h.hashMutex.Unlock()
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for instanceID, hashes := range h.sentHashes {
+		var newHashes []ContentHash
+		for _, hash := range hashes {
+			if hash.timestamp.After(cutoff) {
+				newHashes = append(newHashes, hash)
+			}
+		}
+
+		if len(newHashes) == 0 {
+			delete(h.sentHashes, instanceID)
+		} else if len(newHashes) < len(hashes) {
+			h.sentHashes[instanceID] = newHashes
+		}
+	}
+}
+
+// isDuplicateContent checks if we've recently sent this content
+func (h *TerminalHandler) isDuplicateContent(instanceID, content string) bool {
+	if content == "" {
+		return true // Empty content is always a duplicate
+	}
+
+	// Calculate hash of content
+	hasher := sha256.New()
+	hasher.Write([]byte(content))
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+
+	// Always use write lock to avoid race conditions
+	h.hashMutex.Lock()
+	defer h.hashMutex.Unlock()
+
+	hashes, exists := h.sentHashes[instanceID]
+	
+	if !exists {
+		// First content for this instance
+		h.sentHashes[instanceID] = []ContentHash{{
+			hash:      contentHash,
+			timestamp: time.Now(),
+		}}
+		return false
+	}
+
+	// Check for duplicate - use slice for quick access to recent hashes
+	for i := len(hashes) - 1; i >= 0 && i >= len(hashes)-10; i-- {
+		if hashes[i].hash == contentHash {
+			// Update timestamp of existing hash to prevent cleanup
+			hashes[i].timestamp = time.Now()
+			h.sentHashes[instanceID] = hashes
+			return true // Found a duplicate
+		}
+	}
+
+	// For older hashes, only check if we haven't found it in the recent ones
+	for i := len(hashes) - 11; i >= 0; i-- {
+		if hashes[i].hash == contentHash {
+			// Update timestamp of existing hash to prevent cleanup
+			hashes[i].timestamp = time.Now()
+			h.sentHashes[instanceID] = hashes
+			return true // Found a duplicate
+		}
+	}
+
+	// Not a duplicate, add to hashes
+	// Limit number of stored hashes to prevent unbounded growth
+	if len(hashes) > 100 {
+		// Keep only the most recent 50 hashes
+		hashes = hashes[len(hashes)-50:]
+	}
+	
+	h.sentHashes[instanceID] = append(hashes, ContentHash{
+		hash:      contentHash,
+		timestamp: time.Now(),
+	})
+	
+	return false
 }
 
 // HandleWebSocket handles a websocket connection for terminal access
@@ -214,7 +320,7 @@ func (h *TerminalHandler) handleConnection(conn *websocket.Conn, instance *sessi
 		
 		for {
 			// Read message from websocket
-			_, message, err := conn.ReadMessage()
+			messageType, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 					log.FileOnlyErrorLog.Printf("Websocket error: %v", err)
@@ -222,8 +328,60 @@ func (h *TerminalHandler) handleConnection(conn *websocket.Conn, instance *sessi
 				return
 			}
 
-			// Process message based on type
-			if len(message) > 0 {
+			// Handle JSON message format first (new protocol)
+			if messageType == websocket.TextMessage {
+				// Try to parse as JSON
+				var jsonMsg map[string]interface{}
+				if err := json.Unmarshal(message, &jsonMsg); err != nil {
+					// If not valid JSON and starts with 'c', might be a close message
+					if len(message) > 0 && message[0] == 'c' {
+						log.FileOnlyInfoLog.Printf("Received close command, closing connection for instance: %s", instance.Title)
+						return
+					}
+					log.FileOnlyErrorLog.Printf("Error parsing JSON message: %v", err)
+					continue
+				}
+				
+				// Process JSON message
+				isCommand, ok := jsonMsg["isCommand"].(bool)
+				if ok && isCommand {
+					content, ok := jsonMsg["content"].(string)
+					if ok {
+						switch content {
+						case "resize":
+							// Handle resize
+							cols, _ := jsonMsg["cols"].(float64)
+							rows, _ := jsonMsg["rows"].(float64)
+							if cols > 0 && rows > 0 {
+								if err := instance.SetPreviewSize(int(cols), int(rows)); err != nil {
+									log.FileOnlyErrorLog.Printf("Error resizing terminal: %v", err)
+								} else {
+									log.FileOnlyInfoLog.Printf("Resized terminal to %dx%d", int(cols), int(rows))
+								}
+							}
+						case "clear_terminal":
+							// Just acknowledge - clearing happens on client
+							log.FileOnlyInfoLog.Printf("Received clear terminal request for instance: %s", instance.Title)
+						case "close":
+							// Client requested close
+							log.FileOnlyInfoLog.Printf("Received close command via JSON for instance: %s", instance.Title)
+							return
+						}
+					}
+				} else {
+					// Handle non-command JSON message (input)
+					content, ok := jsonMsg["content"].(string)
+					if ok && content != "" {
+						if err := instance.SendPrompt(content); err != nil {
+							log.FileOnlyErrorLog.Printf("Error sending input to instance: %v", err)
+						}
+					}
+				}
+				continue
+			}
+			
+			// Process binary message based on type
+			if messageType == websocket.BinaryMessage && len(message) > 0 {
 				switch message[0] {
 				case InputMessage:
 					// Send input to instance
@@ -262,9 +420,15 @@ func (h *TerminalHandler) handleConnection(conn *websocket.Conn, instance *sessi
 					} else {
 						log.FileOnlyInfoLog.Printf("Pong sent successfully")
 					}
+					
+				case ClearMessage:
+					// Client requested terminal clear
+					// Just acknowledge - actual clearing happens on client side
+					log.FileOnlyInfoLog.Printf("Received clear terminal request for instance: %s", instance.Title)
 				
 				case CloseMessage:
 					// Client requested close
+					log.FileOnlyInfoLog.Printf("Received close command via binary for instance: %s", instance.Title)
 					return
 				}
 			}
@@ -272,13 +436,51 @@ func (h *TerminalHandler) handleConnection(conn *websocket.Conn, instance *sessi
 	}()
 
 	// Set up periodic content updates
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(500 * time.Millisecond) // Further reduced rate to 500ms to reduce connection issues
 	defer ticker.Stop()
+
+	// Maintain connection state to avoid sending after closed connection
+	connectionActive := true
+
+	// Set up ping ticker to keep connection alive
+	pingTicker := time.NewTicker(15 * time.Second)
+	defer pingTicker.Stop()
+
+	// Send initial content immediately
+	content, err := instance.Preview()
+	if err == nil && content != "" && connectionActive {
+		// Add detailed debug logging
+		log.FileOnlyInfoLog.Printf("Sending initial terminal content (length: %d) to websocket for instance %s", 
+			len(content), instance.Title)
+		
+		// Create the binary message with message type prefix
+		message := append([]byte{OutputMessage}, []byte(content)...)
+		
+		// Send content update with binary protocol
+		if err := conn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+			log.FileOnlyErrorLog.Printf("Error sending initial content update: %v", err)
+			// If this is a serious error, mark connection as inactive
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) ||
+			   strings.Contains(err.Error(), "broken pipe") ||
+			   strings.Contains(err.Error(), "close sent") {
+				log.FileOnlyErrorLog.Printf("Fatal error on initial content, marking connection inactive: %v", err)
+				connectionActive = false
+			}
+		} else {
+			// Record that we've sent this content
+			h.isDuplicateContent(instance.Title, content)
+		}
+	}
 
 	var lastContent string
 	for {
 		select {
 		case <-ticker.C:
+			// Skip if connection is no longer active
+			if !connectionActive {
+				continue
+			}
+			
 			// Get current content
 			content, err := instance.Preview()
 			if err != nil {
@@ -286,8 +488,8 @@ func (h *TerminalHandler) handleConnection(conn *websocket.Conn, instance *sessi
 				continue
 			}
 
-			// Only send if content has changed and is not empty
-			if content != lastContent && content != "" {
+			// Only send if content has changed, is not empty, and is not a duplicate
+			if content != lastContent && content != "" && !h.isDuplicateContent(instance.Title, content) {
 				lastContent = content
 				
 				// Add detailed debug logging
@@ -305,18 +507,36 @@ func (h *TerminalHandler) handleConnection(conn *websocket.Conn, instance *sessi
 					   strings.Contains(err.Error(), "close sent") ||
 					   strings.Contains(err.Error(), "broken pipe") {
 						log.FileOnlyErrorLog.Printf("Fatal websocket error, closing connection: %v", err)
+						connectionActive = false
 						return
 					}
 					// Non-fatal error, just log and continue
 					log.FileOnlyErrorLog.Printf("Non-fatal error sending content, will retry on next tick: %v", err)
-				} else {
-					log.FileOnlyInfoLog.Printf("Successfully sent terminal content to websocket for instance %s", instance.Title)
+				}
+			}
+			
+		case <-pingTicker.C:
+			// Skip if connection is no longer active
+			if !connectionActive {
+				continue
+			}
+			
+			// Send ping to keep the connection alive
+			if err := conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
+				log.FileOnlyErrorLog.Printf("Error sending ping: %v", err)
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) ||
+				   strings.Contains(err.Error(), "close sent") ||
+				   strings.Contains(err.Error(), "broken pipe") {
+					log.FileOnlyErrorLog.Printf("Fatal error on ping, closing connection: %v", err)
+					connectionActive = false
+					return
 				}
 			}
 
 		case <-doneCh:
 			// Instance was detached
 			log.FileOnlyInfoLog.Printf("Instance detached, closing websocket")
+			connectionActive = false
 			return
 		}
 	}

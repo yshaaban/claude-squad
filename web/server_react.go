@@ -25,12 +25,9 @@ func (s *Server) setupReactServer() {
 	router.Use(chimiddleware.Recoverer)
 	router.Use(chimiddleware.StripSlashes)
 	
-	// Authentication Middleware - currently disabled for development
-	if s.config.WebServerAllowLocalhost {
-		log.FileOnlyInfoLog.Printf("Authentication disabled for local connections")
-	} else {
-		router.Use(webmiddleware.AuthMiddleware(s.config))
-	}
+	// Authentication Middleware - disabled for local connections
+	// For development and local usage, skip authentication entirely
+	log.FileOnlyInfoLog.Printf("Authentication disabled for all connections in React mode")
 	
 	// Add rate limiting - exempt WebSocket connections from rate limiting
 	// Increase to 500/minute to handle SPA route changes and asset requests

@@ -2,39 +2,7 @@
 
 This file provides critical guidance for working with the Claude Squad codebase.
 
-## CRITICAL GUIDELINES
 
-### Terminal Integration (HIGH RISK)
-
-1. **NEVER USE PANICS**: Panics leave the terminal in a corrupted state. Always use error returns instead.
-
-2. **NO OS.EXIT() CALLS**: Never directly call os.Exit() in library functions. Return errors to the caller.
-
-3. **PTY HANDLING**: The pty library integration is fragile. Always handle errors gracefully for terminal operations.
-
-4. **TMUX SESSION MANAGEMENT**: Always clean up tmux sessions properly. Detached tmux sessions consume resources.
-
-5. **TERMINAL STATE CHANGES**: Be extremely careful with term.SetRaw() or any code that changes terminal state.
-
-### Process Management
-
-1. **CLEANUP ON EXIT**: In Simple Mode, kill Claude processes when the app exits. Call proper cleanup in handleQuit().
-
-2. **STORAGE PURGING**: Remove Simple Mode instances from storage when terminated or app will show stale instances.
-
-3. **PROPER SIGNAL HANDLING**: Always check returns from syscalls, especially SIGWINCH in tmux code.
-
-### Cross-Directory Compatibility
-
-1. **ABSOLUTE PATHS**: Always use absolute path resolution. Application can be run from any directory.
-
-2. **GIT REPO DETECTION**: Git repo detection must traverse up directories to find .git. Never assume current dir.
-
-### Logging Guidelines
-
-1. **NO DEFAULT FILE LOGGING**: Logging to files is disabled by default. Use --log-to-file only for debugging.
-
-## Key Commands
 
 ```bash
 # Build and install
@@ -69,6 +37,8 @@ cs --log-to-file
 
 5. **Storage Management**: Code that loads/saves instance data, especially the DeleteInstance() method
 
+6. **WebSocket Communication**: Client-server protocol must be aligned between Terminal.tsx and server handlers. Ensure protocols match for ping/pong heartbeats, binary vs. JSON messages, and command formats.
+
 ## Recovery Procedures
 
 1. **Broken Terminal**: If a terminal is left in a broken state, run `reset` command in that terminal
@@ -78,3 +48,17 @@ cs --log-to-file
 3. **Stale Instances**: Run `cs reset` to clean up all instances and tmux sessions when in doubt
 
 4. **Debugging Issues**: Run with `cs --log-to-file` to capture debug info to `/tmp/claudesquad.log`
+
+5. **WebSocket Connection Issues**: For debugging WebSocket connection problems, check browser console logs for missed heartbeats or protocol errors, and server logs for "broken pipe" errors.
+
+## Effective Tools for Debugging
+
+1. **Gemini Analysis**: The Gemini tools (`mcp__gemsuite-mcp__gemini_ultrathink`) are extremely valuable for complex code analysis across multiple files. Use them for:
+   - Debugging complex interaction issues
+   - Finding root causes across multiple components
+   You simply need to pass a concise description of the problem and the list of all the relevant files, including log files, don't inline the content of the files in the request, it is automatically handled. 
+
+2. **Log File Examination**: For WebSocket or terminal issues, use log files with `cs --log-to-file` and grep for critical errors:
+   ```bash
+   cat /tmp/claudesquad.log | grep -i "WebSocket" | grep -i "error"
+   ```

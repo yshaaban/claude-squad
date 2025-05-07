@@ -16,9 +16,11 @@ type TerminalUpdate struct {
 
 // TerminalInput represents input sent to a terminal from a client.
 type TerminalInput struct {
-	InstanceTitle string `json:"instance_title"`
-	Content       string `json:"content"`
-	IsCommand     bool   `json:"is_command"` // True if this is a command like resize
+	InstanceTitle string      `json:"instance_title"`
+	Content       string      `json:"content"`
+	IsCommand     bool        `json:"is_command"` // True if this is a command like resize
+	Cols          interface{} `json:"cols,omitempty"`
+	Rows          interface{} `json:"rows,omitempty"`
 }
 
 // TaskItem represents a single task item from Claude's todo list.
