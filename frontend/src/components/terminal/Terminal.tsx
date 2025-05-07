@@ -305,8 +305,7 @@ const Terminal = ({
       setTerminal(null) // Clear terminal from state
       fitAddonRef.current = null // Clear ref to addon
     }
-  // Removed 'connected' from dependencies to prevent terminal recreation on reconnect
-  }, [instanceName, updateStatus, sendResize, clearTerminal, log, attemptFitAndResize])
+  }, [instanceName, updateStatus, sendResize, clearTerminal, log, attemptFitAndResize, connected])
   
   // NOTE: Custom ping interval removed in favor of standard WebSocket protocol
   // The browser will automatically handle standard WebSocket ping/pong frames
@@ -721,17 +720,11 @@ const Terminal = ({
   useEffect(() => {
     if (!terminal || !instanceName) return
     
-    // Track whether component is mounted to prevent state updates after unmount
-    let isMounted = true;
-    
     // Connect on mount
     connectWebSocket()
     
     // Cleanup on unmount
     return () => {
-      // Mark component as unmounted to prevent late state updates
-      isMounted = false;
-      
       // Clear any pending reconnect timeouts
       if (reconnectTimeoutRef.current !== null) {
         window.clearTimeout(reconnectTimeoutRef.current)
@@ -761,14 +754,9 @@ const Terminal = ({
         socketRef.current = null;
       }
       
-      // Update state only if still mounted
-      if (isMounted) {
-        setConnected(false)
-        if (onConnectionChange) onConnectionChange(false)
-      }
-      
-      // Clear any pending timeouts and intervals
-      processedContentHashRef.current.clear();
+      // Update state
+      setConnected(false)
+      if (onConnectionChange) onConnectionChange(false)
     }
   }, [
     terminal, 

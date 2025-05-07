@@ -66,6 +66,9 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Mutex for websocket writes - declared early as it's used in multiple goroutines
+		var writeMu sync.Mutex
+
 		// Add detailed connection logging
 		log.FileOnlyInfoLog.Printf("WebSocket: New connection request from %s for path %s", r.RemoteAddr, r.URL.Path)
 		
@@ -376,8 +379,7 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		}
 		log.FileOnlyInfoLog.Printf("WebSocket: Successfully sent terminal configuration for '%s'", instanceTitle)
 
-		// Mutex for websocket writes
-		var writeMu sync.Mutex
+		// WebSocket write operations handled above
 
 		// Handle incoming messages from client (bidirectional communication)
 		if privileges == "read-write" {
@@ -729,19 +731,8 @@ func WebSocketHandler(storage *session.Storage, monitor types.TerminalMonitorInt
 		log.FileOnlyInfoLog.Printf("WebSocket: Starting update listener for '%s'", instanceTitle)
 		updateCounter := 0
 		
-		// Create updates loop with context awareness - add panic recovery
-		go func() {
-			// Add panic recovery for update loop
-			defer func() {
-				if r := recover(); r != nil {
-					log.FileOnlyErrorLog.Printf("WebSocket: PANIC in update loop for '%s': %v\n%s", 
-						instanceTitle, r, debug.Stack())
-					cancel() // Signal all goroutines to terminate
-				}
-			}()
-			
-			updateLoop:
-			for {
+		updateLoop:
+		for {
 				select {
 				case update, ok := <-updates:
 					if !ok {

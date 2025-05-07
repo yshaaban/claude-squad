@@ -14,6 +14,21 @@ This document outlines the final set of modifications made to fix WebSocket conn
 }, [instanceName, updateStatus, sendResize, clearTerminal, log, attemptFitAndResize])
 ```
 
+### Improved Terminal Initialization
+- Properly open terminal before storing in state
+- Added robust dimension validation and resize handling
+
+```javascript
+// Important: Open terminal BEFORE storing it in state
+if (terminalRef.current) {
+  term.open(terminalRef.current)
+  updateStatus('Initializing terminal...')
+}
+
+// THEN store terminal instance in state
+setTerminal(term)
+```
+
 ## 2. Server-Side Improvements
 
 ### Added Panic Recovery to All Goroutines
@@ -43,6 +58,15 @@ defer func() {
 - Added proper mutex handling for thread safety
 - Improved cleanup and resource release
 
+### Fixed Syntax Issues
+- Fixed mutex declaration order to ensure it's defined before first use
+- Ensured thread safety with proper mutex placement
+
+```go
+// Mutex for websocket writes - declared early as it's used in multiple goroutines
+var writeMu sync.Mutex
+```
+
 ## 3. Connection Architecture
 
 The connection architecture now follows these principles:
@@ -54,9 +78,15 @@ The connection architecture now follows these principles:
 
 ## How to Apply These Fixes
 
-These fixes have already been implemented in:
+These fixes have been implemented in:
 - `/frontend/src/components/terminal/Terminal.tsx`
 - `/web/handlers/websocket.go`
+
+You can apply them using the `clean_fix.sh` script which:
+1. Creates backups of the original files
+2. Applies the Terminal.tsx fixes
+3. Properly handles the mutex declaration in websocket.go
+4. Rebuilds the application
 
 ## Testing
 
@@ -66,3 +96,12 @@ To test the stability improvements:
 3. Test multiple resize operations
 4. Test connection stability by temporarily disabling network
 5. Test terminal content rendering
+
+## Verification
+
+After applying these fixes, WebSocket connections should:
+- Maintain stability over long periods
+- Handle network interruptions gracefully
+- Properly resize terminals when windows are resized
+- Show no errors related to dimensions or undefined references
+- Not create infinite reconnection loops
