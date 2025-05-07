@@ -49,12 +49,30 @@ type InstanceOutput struct {
 // InstancesHandler handles listing all instances.
 func InstancesHandler(storage *session.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		log.FileOnlyInfoLog.Printf("API: InstancesHandler called from %s", r.RemoteAddr)
+		
 		// Load all instances
 		instances, err := storage.LoadInstances()
 		if err != nil {
-			log.ErrorLog.Printf("Error loading instances: %v", err)
-			http.Error(w, "Error loading instances", http.StatusInternalServerError)
-			return
+			// Don't fail the whole request if there's just an issue with an existing tmux session
+			if strings.Contains(err.Error(), "failed to start new session: tmux session already exists") {
+				// This is an expected case for web mode with existing sessions
+				log.FileOnlyWarningLog.Printf("API: Non-fatal error loading instances: %v", err)
+				// Continue with empty instances list
+				instances = []*session.Instance{}
+			} else {
+				// For other errors, still log and return error
+				log.FileOnlyErrorLog.Printf("API: Error loading instances: %v", err)
+				http.Error(w, "Error loading instances", http.StatusInternalServerError)
+				return
+			}
+		}
+		
+		// Log all instances
+		log.FileOnlyInfoLog.Printf("API: Loaded %d instances for InstancesHandler", len(instances))
+		for i, instance := range instances {
+			log.FileOnlyInfoLog.Printf("API: Instance %d: Title=%s, Status=%v", 
+				i, instance.Title, instance.Status)
 		}
 		
 		// Filter by status if requested
@@ -80,7 +98,7 @@ func InstancesHandler(storage *session.Storage) http.HandlerFunc {
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"instances": summaries,
 		}); err != nil {
-			log.ErrorLog.Printf("Error encoding instances: %v", err)
+			log.FileOnlyErrorLog.Printf("API: Error encoding instances: %v", err)
 			http.Error(w, "Error encoding response", http.StatusInternalServerError)
 			return
 		}
@@ -118,7 +136,7 @@ func InstanceDetailHandler(storage *session.Storage) http.HandlerFunc {
 		// Return as JSON
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(detail); err != nil {
-			log.ErrorLog.Printf("Error encoding instance: %v", err)
+			log.FileOnlyErrorLog.Printf("API: Error encoding instance detail: %v", err)
 			http.Error(w, "Error encoding response", http.StatusInternalServerError)
 			return
 		}
@@ -162,7 +180,7 @@ func InstanceOutputHandler(storage *session.Storage) http.HandlerFunc {
 		// Get terminal output
 		content, err := instance.Preview()
 		if err != nil {
-			log.ErrorLog.Printf("Error getting terminal output: %v", err)
+			log.FileOnlyErrorLog.Printf("API: Error getting terminal output for '%s': %v", name, err)
 			http.Error(w, "Error getting terminal output", http.StatusInternalServerError)
 			return
 		}
@@ -181,12 +199,15 @@ func InstanceOutputHandler(storage *session.Storage) http.HandlerFunc {
 			// This would truncate content to the specified number of lines
 		}
 		
+		// Determine prompt status
+		_, hasPrompt := instance.HasUpdated(content)
+		
 		// Create response
 		output := InstanceOutput{
 			Content:    content,
 			Format:     format,
 			Timestamp:  time.Now(),
-			HasPrompt:  false, // Determine prompt status from content if needed
+			HasPrompt:  hasPrompt,
 		}
 		
 		// Return as JSON
@@ -209,7 +230,7 @@ func ServerStatusHandler(version string, startTime time.Time) http.HandlerFunc {
 		
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(status); err != nil {
-			log.ErrorLog.Printf("Error encoding status: %v", err)
+			log.FileOnlyErrorLog.Printf("API: Error encoding server status: %v", err)
 			http.Error(w, "Error encoding response", http.StatusInternalServerError)
 			return
 		}

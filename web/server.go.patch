@@ -1,0 +1,24 @@
+--- a/web/server.go
++++ b/web/server.go
+@@ -69,7 +69,7 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
+ 		// Override the config temporarily to ensure this works in testing
+ 		if true || config.WebServerAllowLocalhost {
+ 			// No auth for localhost
+-			log.InfoLog.Printf("Authentication disabled for localhost")
++			log.FileOnlyInfoLog.Printf("Authentication disabled for localhost")
+ 		} else {
+ 			router.Use(webmiddleware.AuthMiddleware(config))
+ 		}
+@@ -143,9 +143,9 @@ func (s *Server) Start() error {
+ 			var err error
+ 			if s.config.WebServerUseTLS {
+-				log.InfoLog.Printf("Starting HTTPS server on %s:%d", 
++				log.FileOnlyInfoLog.Printf("Starting HTTPS server on %s:%d", 
+ 					s.config.WebServerHost, s.config.WebServerPort)
+ 				err = s.srv.ListenAndServeTLS("", "")  // Uses TLSConfig
+ 			} else {
+-				log.InfoLog.Printf("Starting HTTP server on %s:%d", 
++				log.FileOnlyInfoLog.Printf("Starting HTTP server on %s:%d", 
+ 					s.config.WebServerHost, s.config.WebServerPort)
+ 				err = s.srv.ListenAndServe()
+ 			}

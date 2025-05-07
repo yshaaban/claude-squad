@@ -1,0 +1,1047 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="60"> <!-- Auto-refresh every minute to ensure terminal stays responsive -->
+    <title>Claude Squad - Easy Terminal</title>
+    <!-- Include xterm.js for proper ANSI rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.1.0/lib/xterm.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        .status-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            align-items: center;
+            background-color: #eee;
+            padding: 8px 15px;
+            border-radius: 5px;
+        }
+        
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            font-size: 0.9rem;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        
+        .status-dot.disconnected { background-color: #dc3545; }
+        .status-dot.connected { background-color: #28a745; }
+        .status-dot.connecting { background-color: #ffc107; }
+        
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+        }
+        
+        .terminal-container {
+            background-color: #000;
+            color: #fff;
+            font-family: "Menlo", "Monaco", "Courier New", monospace;
+            padding: 10px;
+            border-radius: 5px;
+            height: 500px;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+        
+        .terminal-input {
+            display: flex;
+            margin-top: 10px;
+        }
+        
+        .terminal-input input {
+            flex: 1;
+            font-family: "Menlo", "Monaco", "Courier New", monospace;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #333;
+            color: #fff;
+        }
+        
+        .btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.2s;
+        }
+        
+        .btn:hover {
+            background-color: #0069d9;
+        }
+        
+        .btn:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .system-message {
+            color: #ffc107;
+            font-style: italic;
+        }
+        
+        .debug-container {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: #f9f9f9;
+        }
+        
+        .debug-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .debug-log {
+            height: 200px;
+            overflow: auto;
+            font-family: monospace;
+            font-size: 12px;
+            background-color: #333;
+            color: #eee;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        
+        .log-message {
+            margin-bottom: 4px;
+            line-height: 1.4;
+        }
+        
+        .log-time {
+            color: #888;
+        }
+        
+        .log-info {
+            color: #4caf50;
+        }
+        
+        .log-error {
+            color: #f44336;
+        }
+        
+        .log-warn {
+            color: #ff9800;
+        }
+        
+        .stats-container {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .stat-box {
+            background-color: white;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            flex: 1;
+            text-align: center;
+        }
+        
+        .stat-label {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Claude Squad Terminal</h1>
+        
+        <div class="stats-container">
+            <div class="stat-box">
+                <div class="stat-label">Connection Status</div>
+                <div class="stat-value" id="connection-status-text">Disconnected</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Instance</div>
+                <div class="stat-value" id="instance-name">None</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Messages Received</div>
+                <div class="stat-value" id="messages-count">0</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-label">Last Content Length</div>
+                <div class="stat-value" id="content-length">0</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="btn-group">
+                <button id="connect-btn" class="btn">Connect</button>
+                <button id="disconnect-btn" class="btn" disabled>Disconnect</button>
+                <button id="clear-btn" class="btn">Clear Output</button>
+            </div>
+            <div class="status-indicator">
+                <div id="status-dot" class="status-dot disconnected"></div>
+                <span id="status-text">Disconnected</span>
+            </div>
+        </div>
+        
+        <div class="terminal-container" id="terminal-output"></div>
+        
+        <div class="terminal-input">
+            <input type="text" id="input-field" placeholder="Type a command and press Enter..." disabled>
+        </div>
+        
+        <div class="debug-container">
+            <div class="debug-header">
+                <h3>Debug Log</h3>
+                <button id="clear-log-btn" class="btn">Clear Log</button>
+            </div>
+            <div class="debug-log" id="debug-log"></div>
+        </div>
+    </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Constants for binary message types
+            const OUTPUT_MESSAGE = 'o'.charCodeAt(0);
+            const INPUT_MESSAGE = 'i'.charCodeAt(0);
+            const RESIZE_MESSAGE = 'r'.charCodeAt(0);
+            const PING_MESSAGE = 'p'.charCodeAt(0);
+            const PONG_MESSAGE = 'P'.charCodeAt(0);
+            const CLOSE_MESSAGE = 'c'.charCodeAt(0);
+            
+            // Elements
+            const terminalOutput = document.getElementById('terminal-output');
+            const inputField = document.getElementById('input-field');
+            const connectBtn = document.getElementById('connect-btn');
+            const disconnectBtn = document.getElementById('disconnect-btn');
+            const clearBtn = document.getElementById('clear-btn');
+            const clearLogBtn = document.getElementById('clear-log-btn');
+            const debugLog = document.getElementById('debug-log');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+            const connectionStatusText = document.getElementById('connection-status-text');
+            const instanceNameElem = document.getElementById('instance-name');
+            const messagesCount = document.getElementById('messages-count');
+            const contentLength = document.getElementById('content-length');
+            
+            // State
+            let socket = null;
+            let connected = false;
+            let messageCount = 0;
+            
+            // Get instance from URL or use default
+            const urlParams = new URLSearchParams(window.location.search);
+            let instanceName = urlParams.get('instance') || 'simple-default';
+            instanceNameElem.textContent = instanceName;
+            
+            // Logging
+            function log(type, message) {
+                const now = new Date();
+                const timestamp = now.toISOString().split('T')[1].split('.')[0];
+                
+                // Log to console
+                if (type === 'error') {
+                    console.error(`[${timestamp}] ${message}`);
+                } else if (type === 'warn') {
+                    console.warn(`[${timestamp}] ${message}`);
+                } else {
+                    console.log(`[${timestamp}] ${message}`);
+                }
+                
+                // Log to UI
+                const logMessage = document.createElement('div');
+                logMessage.className = `log-message log-${type}`;
+                logMessage.innerHTML = `<span class="log-time">[${timestamp}]</span> ${message}`;
+                
+                debugLog.appendChild(logMessage);
+                debugLog.scrollTop = debugLog.scrollHeight;
+            }
+            
+            // Update connection status UI
+            function updateConnectionStatus(status, message) {
+                statusDot.className = `status-dot ${status}`;
+                statusText.textContent = message;
+                connectionStatusText.textContent = message;
+                
+                if (status === 'connected') {
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    inputField.disabled = false;
+                } else {
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    inputField.disabled = true;
+                }
+            }
+            
+            // Add terminal message
+            function addMessage(text, isSystem = false) {
+                const message = document.createElement('div');
+                message.className = isSystem ? 'system-message' : '';
+                message.textContent = text;
+                
+                terminalOutput.appendChild(message);
+                terminalOutput.scrollTop = terminalOutput.scrollHeight;
+            }
+            
+            // Connect to WebSocket
+            function connect() {
+                if (connected) {
+                    log('warn', 'Already connected');
+                    return;
+                }
+                
+                updateConnectionStatus('connecting', 'Connecting...');
+                addMessage(`Connecting to instance: ${instanceName}...`, true);
+                
+                try {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    // Make sure to use the same host:port as the page was loaded from
+                    const host = window.location.host;
+                    const wsUrl = `${protocol}//${host}/ws/terminal/${instanceName}`;
+                    
+                    log('info', `Connecting to WebSocket: ${wsUrl} (using host ${host})`);
+                    
+                    socket = new WebSocket(wsUrl);
+                    socket.binaryType = 'arraybuffer';
+                    
+                    socket.onopen = function() {
+                        connected = true;
+                        updateConnectionStatus('connected', 'Connected');
+                        log('info', 'WebSocket connection established');
+                        addMessage('Connected to terminal. Waiting for data...', true);
+                        
+                        // Slight delay before sending any messages
+                        // This gives the server time to fully establish the connection
+                        setTimeout(() => {
+                            // Send initial resize only if still connected
+                            if (socket && socket.readyState === WebSocket.OPEN) {
+                                log('info', 'Sending initial resize request');
+                                sendResize();
+                                
+                                // Start ping interval
+                                startPingInterval();
+                            }
+                        }, 500);
+                    };
+                    
+                    socket.onclose = function(event) {
+                        connected = false;
+                        updateConnectionStatus('disconnected', 'Disconnected');
+                        
+                        log('info', `WebSocket connection closed: ${event.code} ${event.reason || ''}`);
+                        addMessage(`Connection closed. ${event.reason || ''}`, true);
+                        
+                        // Clear ping interval
+                        if (window.pingInterval) {
+                            clearInterval(window.pingInterval);
+                        }
+                    };
+                    
+                    socket.onerror = function(error) {
+                        connected = false;
+                        updateConnectionStatus('disconnected', 'Error');
+                        
+                        log('error', `WebSocket error: ${error}`);
+                        addMessage('Connection error. See debug log for details.', true);
+                    };
+                    
+                    socket.onmessage = function(event) {
+                        messageCount++;
+                        messagesCount.textContent = messageCount;
+                        
+                        // Handle binary message
+                        if (event.data instanceof ArrayBuffer) {
+                            const data = new Uint8Array(event.data);
+                            
+                            log('info', `Received binary message, length: ${data.length} bytes`);
+                            
+                            if (data.length === 0) {
+                                log('warn', 'Empty binary message received');
+                                return;
+                            }
+                            
+                            // Get message type and content
+                            const messageType = data[0];
+                            const content = new TextDecoder().decode(data.slice(1));
+                            
+                            if (messageType === OUTPUT_MESSAGE) {
+                                log('info', `Terminal output received, length: ${content.length}`);
+                                contentLength.textContent = content.length;
+                                
+                                // Process terminal output (don't clear previous content)
+                                updateTerminalContent(content);
+                            } else if (messageType === PONG_MESSAGE) {
+                                log('info', 'Received pong response');
+                                // Reset heartbeat counter for application-level pongs
+                                if (window.handlePong) {
+                                    window.handlePong();
+                                }
+                            } else {
+                                log('warn', `Unknown message type: ${messageType}`);
+                            }
+                        } else if (typeof event.data === 'string') {
+                            // Handle text message (JSON format)
+                            log('info', `Text message received, length: ${event.data.length}`);
+                            
+                            try {
+                                const data = JSON.parse(event.data);
+                                
+                                // Process different types of messages
+                                if (data.type === 'config') {
+                                    log('info', 'Terminal configuration received:', JSON.stringify(data));
+                                    // Could apply theme configuration here
+                                } else if (data.content !== undefined) {
+                                    // Normal terminal content update
+                                    log('info', `Terminal content received via JSON, length: ${data.content.length}`);
+                                    contentLength.textContent = data.content.length;
+                                    
+                                    // Process the content without clearing
+                                    updateTerminalContent(data.content);
+                                } else if (data.error) {
+                                    // Error message
+                                    log('error', `Server error: ${data.error}`);
+                                    addMessage(`Error: ${data.error}`, true);
+                                } else {
+                                    // Unknown message format
+                                    log('info', 'Unhandled message format:', JSON.stringify(data));
+                                }
+                            } catch (e) {
+                                // Failed to parse as JSON - try to display as text
+                                log('error', `Failed to parse JSON: ${e.message}`);
+                                
+                                // If it looks like terminal content, try to display it
+                                if (event.data.includes('\x1b[') || !event.data.includes('{')) {
+                                    updateTerminalContent(event.data);
+                                }
+                            }
+                        }
+                    };
+                } catch (error) {
+                    log('error', `Failed to create WebSocket: ${error.message}`);
+                    updateConnectionStatus('disconnected', 'Failed');
+                    addMessage('Failed to connect to terminal.', true);
+                }
+            }
+            
+            // Disconnect from WebSocket
+            function disconnect() {
+                if (!connected || !socket) {
+                    log('warn', 'Not connected');
+                    return;
+                }
+                
+                log('info', 'Disconnecting...');
+                
+                try {
+                    // Send close message
+                    if (socket.readyState === WebSocket.OPEN) {
+                        sendMessage(CLOSE_MESSAGE, new Uint8Array(0));
+                        
+                        // Close after a short delay to allow the message to be sent
+                        setTimeout(() => {
+                            socket.close();
+                            socket = null;
+                        }, 100);
+                    } else {
+                        socket.close();
+                        socket = null;
+                    }
+                    
+                    connected = false;
+                    updateConnectionStatus('disconnected', 'Disconnected');
+                    addMessage('Disconnected from terminal.', true);
+                    
+                    // Clear ping interval
+                    if (window.pingInterval) {
+                        clearInterval(window.pingInterval);
+                    }
+                } catch (error) {
+                    log('error', `Error disconnecting: ${error.message}`);
+                }
+            }
+            
+            // Update terminal content
+            function updateTerminalContent(content) {
+                if (!content) return;
+                
+                // Use xterm.js if available - first check if it exists in global scope
+                if (typeof Terminal !== 'undefined') {
+                    try {
+                        // Handle xterm.js rendering
+                        
+                        // Create xterm instance if it doesn't exist
+                        if (!window.xtermInstance) {
+                            log('info', 'Creating xterm.js terminal instance');
+                            
+                            // First clear any HTML content
+                            terminalOutput.innerHTML = '';
+                            
+                            // Create xterm.js terminal with better settings
+                            window.xtermInstance = new Terminal({
+                                cursorBlink: true,
+                                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                                fontSize: 14,
+                                theme: {
+                                    background: '#000',
+                                    foreground: '#fff'
+                                },
+                                convertEol: true,
+                                scrollback: 5000, // Increase scrollback buffer
+                                disableStdin: false // Enable input
+                            });
+                            
+                            // Add a clear method if it doesn't exist
+                            if (!window.xtermInstance.clear) {
+                                window.xtermInstance.clear = function() {
+                                    this.write('\x1b[2J\x1b[H'); // ANSI clear screen and move to home position
+                                };
+                            }
+                            
+                            // Open terminal in the container
+                            window.xtermInstance.open(terminalOutput);
+                        } else {
+                            // Do not clear the terminal for subsequent updates
+                            // This caused content to disappear
+                            log('info', 'Using existing xterm.js instance');
+                        }
+                        
+                        // Compare normalized content versions
+                        // First normalize by trimming whitespace and removing any trailing newlines
+                        const normalizedContent = content.trim();
+                        const lastNormalizedContent = window.lastContent ? window.lastContent.trim() : '';
+                        
+                        // Check if content has actually changed from previous update
+                        if (!window.lastContent || normalizedContent !== lastNormalizedContent) {
+                            // This is new content - clear terminal and write fresh content
+                            window.xtermInstance.clear();
+                            window.xtermInstance.write(content);
+                            window.lastContent = content;
+                            log('info', 'New content rendered using xterm.js (' + content.length + ' bytes)');
+                        } else {
+                            // Same content as before - don't write again to avoid overlap
+                            log('info', 'Skipped rendering duplicate content (' + content.length + ' bytes)');
+                        }
+                        return;
+                    } catch (e) {
+                        log('error', `Failed to initialize xterm.js: ${e.message}`);
+                        // Fall back to basic rendering
+                    }
+                }
+                
+                // If xterm.js isn't available or failed, use basic rendering
+                log('info', 'Using fallback HTML renderer for terminal content');
+                
+                // Compare normalized content versions
+                const normalizedContent = content.trim();
+                const lastNormalizedContent = window.lastHtmlContent ? window.lastHtmlContent.trim() : '';
+                
+                // Check if content has actually changed from previous update
+                if (!window.lastHtmlContent || normalizedContent !== lastNormalizedContent) {
+                    // This is new content - clear terminal and render fresh content
+                    terminalOutput.textContent = '';
+                    
+                    // Create custom renderer for ANSI sequences
+                    const ansiRenderer = new AnsiRenderer();
+                    
+                    // Split by lines and add each line
+                    const lines = content.split('\n');
+                    for (const line of lines) {
+                        const lineDiv = document.createElement('div');
+                        
+                        // Use ANSI renderer instead of raw text if the line contains escape sequences
+                        if (line.includes('\x1b[')) {
+                            lineDiv.innerHTML = ansiRenderer.processAnsiToHtml(line);
+                        } else {
+                            lineDiv.textContent = line;
+                        }
+                        
+                        terminalOutput.appendChild(lineDiv);
+                    }
+                    
+                    // Save content for future comparison
+                    window.lastHtmlContent = content;
+                    log('info', 'New content rendered using HTML fallback (' + content.length + ' bytes)');
+                } else {
+                    // Same content as before - don't re-render to avoid flicker
+                    log('info', 'Skipped rendering duplicate HTML content (' + content.length + ' bytes)');
+                }
+                
+                // Scroll to bottom
+                terminalOutput.scrollTop = terminalOutput.scrollHeight;
+            }
+            
+            // ANSI Renderer class for better handling of escape sequences
+            class AnsiRenderer {
+                constructor() {
+                    // Default styles
+                    this.currentForeground = 'white';
+                    this.currentBackground = 'transparent';
+                    this.bold = false;
+                    this.italic = false;
+                    this.underline = false;
+                    
+                    // Define basic ANSI color mapping
+                    this.colors = {
+                        0: 'black', 1: 'red', 2: 'green', 3: 'yellow',
+                        4: 'blue', 5: 'magenta', 6: 'cyan', 7: 'white',
+                        // Bright colors
+                        8: '#555', 9: '#f55', 10: '#5f5', 11: '#ff5',
+                        12: '#55f', 13: '#f5f', 14: '#5ff', 15: '#fff'
+                    };
+                }
+                
+                // Process ANSI sequences and convert to HTML
+                processAnsiToHtml(text) {
+                    let result = '';
+                    let currentSpan = null;
+                    let i = 0;
+                    
+                    while (i < text.length) {
+                        // Look for escape sequence
+                        if (text[i] === '\x1b' && text[i + 1] === '[') {
+                            // Close any open span
+                            if (currentSpan) {
+                                result += '</span>';
+                                currentSpan = null;
+                            }
+                            
+                            // Find end of escape sequence (a letter)
+                            let end = i + 2;
+                            while (end < text.length && 
+                                   !(text.charCodeAt(end) >= 65 && text.charCodeAt(end) <= 122)) {
+                                end++;
+                            }
+                            
+                            if (end < text.length) {
+                                // Get the command and parameters
+                                const esq = text.substring(i + 2, end + 1);
+                                const command = esq.charAt(esq.length - 1);
+                                const params = esq.substring(0, esq.length - 1).split(';');
+                                
+                                // Handle different commands
+                                if (command === 'm') { // SGR (Select Graphic Rendition)
+                                    const styles = this.processGraphicCommand(params);
+                                    
+                                    // Start a new span with the styles
+                                    if (styles) {
+                                        result += `<span style="${styles}">`;
+                                        currentSpan = true;
+                                    }
+                                }
+                                // Skip the processed escape sequence
+                                i = end + 1;
+                            } else {
+                                // Incomplete sequence, skip
+                                i++;
+                            }
+                        } else {
+                            // Regular character
+                            result += this.escapeHtml(text[i]);
+                            i++;
+                        }
+                    }
+                    
+                    // Close any open span
+                    if (currentSpan) {
+                        result += '</span>';
+                    }
+                    
+                    return result;
+                }
+                
+                // Process SGR (graphic) commands and return CSS styles
+                processGraphicCommand(params) {
+                    if (params.length === 0 || params[0] === '0' || params[0] === '') {
+                        // Reset all attributes
+                        this.currentForeground = 'white';
+                        this.currentBackground = 'transparent';
+                        this.bold = false;
+                        this.italic = false;
+                        this.underline = false;
+                        return 'color: white; background-color: transparent; font-weight: normal; font-style: normal; text-decoration: none;';
+                    }
+                    
+                    let styles = '';
+                    
+                    for (let i = 0; i < params.length; i++) {
+                        const param = parseInt(params[i], 10);
+                        
+                        switch (param) {
+                            case 1: // Bold
+                                this.bold = true;
+                                styles += 'font-weight: bold; ';
+                                break;
+                            case 3: // Italic
+                                this.italic = true;
+                                styles += 'font-style: italic; ';
+                                break;
+                            case 4: // Underline
+                                this.underline = true;
+                                styles += 'text-decoration: underline; ';
+                                break;
+                            case 22: // Not bold
+                                this.bold = false;
+                                styles += 'font-weight: normal; ';
+                                break;
+                            case 23: // Not italic
+                                this.italic = false;
+                                styles += 'font-style: normal; ';
+                                break;
+                            case 24: // Not underlined
+                                this.underline = false;
+                                styles += 'text-decoration: none; ';
+                                break;
+                            case 30: case 31: case 32: case 33: case 34: case 35: case 36: case 37:
+                                // Basic foreground colors
+                                this.currentForeground = this.colors[param - 30];
+                                styles += `color: ${this.currentForeground}; `;
+                                break;
+                            case 39: // Default foreground color
+                                this.currentForeground = 'white';
+                                styles += 'color: white; ';
+                                break;
+                            case 40: case 41: case 42: case 43: case 44: case 45: case 46: case 47:
+                                // Basic background colors
+                                this.currentBackground = this.colors[param - 40];
+                                styles += `background-color: ${this.currentBackground}; `;
+                                break;
+                            case 49: // Default background color
+                                this.currentBackground = 'transparent';
+                                styles += 'background-color: transparent; ';
+                                break;
+                            case 90: case 91: case 92: case 93: case 94: case 95: case 96: case 97:
+                                // Bright foreground colors
+                                this.currentForeground = this.colors[param - 90 + 8];
+                                styles += `color: ${this.currentForeground}; `;
+                                break;
+                            case 100: case 101: case 102: case 103: case 104: case 105: case 106: case 107:
+                                // Bright background colors
+                                this.currentBackground = this.colors[param - 100 + 8];
+                                styles += `background-color: ${this.currentBackground}; `;
+                                break;
+                            case 38: case 48: // Extended colors
+                                // Check if the extended color format is valid
+                                if (i + 2 < params.length) {
+                                    const colorMode = parseInt(params[i + 1], 10);
+                                    
+                                    if (colorMode === 5 && i + 2 < params.length) {
+                                        // 8-bit color (256 colors)
+                                        const colorIndex = parseInt(params[i + 2], 10);
+                                        let color;
+                                        
+                                        if (colorIndex < 16) {
+                                            // Basic + bright colors
+                                            color = this.colors[colorIndex];
+                                        } else if (colorIndex >= 232) {
+                                            // Grayscale colors
+                                            const level = Math.round(((colorIndex - 232) / 23) * 255);
+                                            color = `rgb(${level},${level},${level})`;
+                                        } else {
+                                            // 6×6×6 color cube
+                                            colorIndex -= 16;
+                                            const r = Math.floor(colorIndex / 36) * 51;
+                                            const g = Math.floor((colorIndex % 36) / 6) * 51;
+                                            const b = (colorIndex % 6) * 51;
+                                            color = `rgb(${r},${g},${b})`;
+                                        }
+                                        
+                                        if (param === 38) {
+                                            // Foreground
+                                            this.currentForeground = color;
+                                            styles += `color: ${color}; `;
+                                        } else {
+                                            // Background
+                                            this.currentBackground = color;
+                                            styles += `background-color: ${color}; `;
+                                        }
+                                        
+                                        i += 2; // Skip the next two parameters
+                                    } else if (colorMode === 2 && i + 4 < params.length) {
+                                        // 24-bit RGB color
+                                        const r = parseInt(params[i + 2], 10);
+                                        const g = parseInt(params[i + 3], 10);
+                                        const b = parseInt(params[i + 4], 10);
+                                        const color = `rgb(${r},${g},${b})`;
+                                        
+                                        if (param === 38) {
+                                            // Foreground
+                                            this.currentForeground = color;
+                                            styles += `color: ${color}; `;
+                                        } else {
+                                            // Background
+                                            this.currentBackground = color;
+                                            styles += `background-color: ${color}; `;
+                                        }
+                                        
+                                        i += 4; // Skip the next four parameters
+                                    }
+                                }
+                                break;
+                        }
+                    }
+                    
+                    return styles;
+                }
+                
+                // Escape HTML entities to prevent XSS
+                escapeHtml(text) {
+                    return text
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/'/g, '&#039;');
+                }
+            }
+            
+            // Send message with type prefix
+            function sendMessage(type, data) {
+                if (!connected || !socket || socket.readyState !== WebSocket.OPEN) {
+                    log('warn', 'Cannot send message: not connected');
+                    return;
+                }
+                
+                // Create message with type prefix
+                const message = new Uint8Array(data.length + 1);
+                message[0] = type;
+                message.set(data, 1);
+                
+                try {
+                    socket.send(message);
+                    log('info', `Sent message type ${type}`);
+                    return true;
+                } catch (error) {
+                    log('error', `Failed to send message: ${error.message}`);
+                    return false;
+                }
+            }
+            
+            // Send input to terminal
+            function sendInput(text) {
+                if (!text) return;
+                
+                log('info', `Sending input: ${text}`);
+                const data = new TextEncoder().encode(text);
+                if (sendMessage(INPUT_MESSAGE, data)) {
+                    // Add a visual indicator
+                    addMessage(`> ${text}`, true);
+                }
+            }
+            
+            // Send terminal resize
+            function sendResize() {
+                if (!connected || !socket || socket.readyState !== WebSocket.OPEN) {
+                    log('warn', 'Cannot send resize: not connected');
+                    return;
+                }
+                
+                try {
+                    // Get terminal dimensions
+                    const cols = 80; // Default terminal width
+                    const rows = 24; // Default terminal height
+                    
+                    // Create resize data
+                    const resizeData = JSON.stringify({ cols, rows });
+                    const data = new TextEncoder().encode(resizeData);
+                    
+                    log('info', `Sending resize: ${cols}x${rows}`);
+                    
+                    // Don't use the sendMessage wrapper to simplify the message
+                    const message = new Uint8Array(data.length + 1);
+                    message[0] = RESIZE_MESSAGE;
+                    message.set(data, 1);
+                    
+                    socket.send(message);
+                    log('info', 'Resize sent successfully');
+                } catch (error) {
+                    log('error', `Failed to send resize: ${error.message}`);
+                }
+            }
+            
+            // Send ping to keep connection alive
+            function sendPing() {
+                if (!connected) return;
+                
+                log('info', 'Sending ping');
+                sendMessage(PING_MESSAGE, new Uint8Array(0));
+            }
+            
+            // Start ping interval
+            function startPingInterval() {
+                // Clear existing interval if any
+                if (window.pingInterval) {
+                    clearInterval(window.pingInterval);
+                }
+                
+                // Create heartbeat system
+                let missedHeartbeats = 0;
+                const MAX_MISSED_HEARTBEATS = 3;
+                
+                // Start new interval with more robust heartbeat check
+                window.pingInterval = setInterval(() => {
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        // Check if we've missed too many heartbeats
+                        if (missedHeartbeats >= MAX_MISSED_HEARTBEATS) {
+                            log('warn', `Missed ${missedHeartbeats} heartbeats - reconnecting`);
+                            
+                            // Force close and reconnect
+                            socket.close();
+                            clearInterval(window.pingInterval);
+                            
+                            // Schedule reconnection after a delay
+                            setTimeout(() => {
+                                log('info', 'Attempting to reconnect after missed heartbeats');
+                                connect();
+                            }, 1000);
+                            
+                            return;
+                        }
+                        
+                        // Send ping and increment missed heartbeats
+                        missedHeartbeats++;
+                        log('info', `Sending keep-alive ping (missed: ${missedHeartbeats})`);
+                        sendPing();
+                        
+                        // Set up pong handler if not already done
+                        if (!socket.onpong) {
+                            socket.onpong = () => {
+                                log('info', 'Received browser-level pong');
+                                missedHeartbeats = 0;
+                            };
+                        }
+                    } else {
+                        log('warn', 'Cannot send ping - connection not open');
+                        clearInterval(window.pingInterval);
+                    }
+                }, 15000); // Every 15 seconds for more responsive monitoring
+                
+                // Also set up a handler for application-level pong messages
+                window.handlePong = () => {
+                    log('info', 'Received application-level pong');
+                    missedHeartbeats = 0;
+                };
+            }
+            
+            // Event listeners
+            connectBtn.addEventListener('click', connect);
+            disconnectBtn.addEventListener('click', disconnect);
+            clearBtn.addEventListener('click', function() {
+                terminalOutput.innerHTML = '';
+                addMessage('Terminal output cleared.', true);
+            });
+            clearLogBtn.addEventListener('click', function() {
+                debugLog.innerHTML = '';
+                log('info', 'Debug log cleared');
+            });
+            
+            // Handle input
+            inputField.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    const text = inputField.value;
+                    if (text) {
+                        sendInput(text);
+                        inputField.value = '';
+                    }
+                }
+            });
+            
+            // Try to fetch instance list if no instance is specified
+            if (!instanceName || instanceName === 'simple-default') {
+                log('info', 'Fetching available instances...');
+                
+                fetch('/api/instances')
+                    .then(response => response.json())
+                    .then(data => {
+                        log('info', `Found ${data.instances.length} instances`);
+                        
+                        if (data.instances.length > 0) {
+                            // Find the first running instance
+                            const runningInstance = data.instances.find(i => i.status === 'running');
+                            if (runningInstance) {
+                                instanceName = runningInstance.title;
+                                instanceNameElem.textContent = instanceName;
+                                log('info', `Selected running instance: ${instanceName}`);
+                                // Update URL to include the instance name
+                                const newUrl = new URL(window.location.href);
+                                newUrl.searchParams.set('instance', instanceName);
+                                window.history.replaceState({}, '', newUrl.toString());
+                                // Connect after a short delay
+                                setTimeout(connect, 500);
+                            } else {
+                                // Use the first instance even if it's not running
+                                instanceName = data.instances[0].title;
+                                instanceNameElem.textContent = instanceName;
+                                log('info', `Selected instance: ${instanceName}`);
+                                // Update URL to include the instance name
+                                const newUrl = new URL(window.location.href);
+                                newUrl.searchParams.set('instance', instanceName);
+                                window.history.replaceState({}, '', newUrl.toString());
+                                // Connect after a short delay
+                                setTimeout(connect, 500);
+                            }
+                        } else {
+                            log('warn', 'No instances found');
+                            addMessage('No instances found. Please create an instance first.', true);
+                        }
+                    })
+                    .catch(error => {
+                        log('error', `Error fetching instances: ${error.message}`);
+                        // Connect with the default instance name as fallback
+                        setTimeout(connect, 500);
+                    });
+            } else {
+                // Instance name provided, connect directly
+                setTimeout(connect, 500);
+            }
+            
+            // Log startup
+            log('info', `Terminal initialized for instance: ${instanceName}`);
+            addMessage(`Claude Squad Terminal initialized for instance: ${instanceName}`, true);
+            addMessage('Click "Connect" to establish WebSocket connection', true);
+        });
+    </script>
+</body>
+</html>

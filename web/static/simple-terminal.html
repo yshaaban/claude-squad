@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Squad Direct Terminal Viewer</title>
+    <!-- Include xterm.js for proper ANSI rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.1.0/lib/xterm.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .terminal-container {
+            width: 100%;
+            height: 500px;
+            display: flex;
+            flex-direction: column;
+            background-color: #000;
+            color: #fff;
+            border-radius: 5px;
+            overflow: hidden;
+            font-family: monospace;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+            margin-bottom: 20px;
+        }
+        .terminal-output {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            white-space: pre-wrap;
+            line-height: 1.3;
+        }
+        .terminal-input {
+            background-color: #111;
+            color: #fff;
+            font-family: monospace;
+            border: none;
+            border-top: 1px solid #333;
+            padding: 10px;
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
+        .terminal-input:focus {
+            outline: none;
+            background-color: #222;
+        }
+        .terminal-line {
+            padding: 2px 0;
+        }
+        .terminal-line.system {
+            color: #2ecc71;
+            font-style: italic;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            justify-content: center;
+        }
+        .btn {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn:hover {
+            background-color: #2980b9;
+        }
+        .info-panel {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        .debug-panel {
+            background-color: #f1f1f1;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .debug-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .debug-title {
+            font-weight: bold;
+            margin: 0;
+        }
+        .status {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #e74c3c;
+        }
+        .status-dot.connected {
+            background-color: #2ecc71;
+        }
+    </style>
+</head>
+<body>
+    <h1>Claude Squad Direct Terminal Viewer</h1>
+    
+    <div class="info-panel">
+        <p>This is a direct terminal connection for debugging Claude Squad. Connect to an instance by providing the <code>?instance=NAME</code> parameter in the URL.</p>
+        <p>This viewer uses direct WebSocket connection without any UI frameworks or terminal emulation libraries.</p>
+    </div>
+    
+    <div class="status">
+        <div class="status-item">
+            <div id="connection-status" class="status-dot"></div>
+            <span id="connection-text">Disconnected</span>
+        </div>
+        <div class="status-item">
+            <span>Messages received: <strong id="messages-count">0</strong></span>
+        </div>
+        <div class="status-item">
+            <span>Last content length: <strong id="content-length">0</strong></span>
+        </div>
+    </div>
+    
+    <div class="controls">
+        <button id="connect-btn" class="btn">Connect</button>
+        <button id="disconnect-btn" class="btn">Disconnect</button>
+        <button id="clear-btn" class="btn">Clear Output</button>
+    </div>
+    
+    <div class="terminal-container" id="terminal-container">
+        <div class="terminal-output" id="terminal-output">
+            <!-- Terminal output will be displayed here -->
+        </div>
+        <input type="text" class="terminal-input" id="terminal-input" placeholder="Type your message and press Enter to send...">
+    </div>
+    
+    <details>
+        <summary>Debug Information</summary>
+        <div class="debug-panel">
+            <div class="debug-header">
+                <h3 class="debug-title">WebSocket Debug Log</h3>
+                <button id="clear-debug-btn" class="btn">Clear Log</button>
+            </div>
+            <div id="debug-log"></div>
+        </div>
+    </details>
+    
+    <!-- Load the external simple-terminal.js file for actual functionality -->
+    <script src="simple-terminal.js"></script>
+    
+    <!-- Keep this older inline script for backward compatibility during transition -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Constants
+        const OUTPUT_MESSAGE = 'o'.charCodeAt(0);
+        const INPUT_MESSAGE = 'i'.charCodeAt(0);
+        const RESIZE_MESSAGE = 'r'.charCodeAt(0);
+        const PING_MESSAGE = 'p'.charCodeAt(0);
+        const PONG_MESSAGE = 'P'.charCodeAt(0);
+        const CLOSE_MESSAGE = 'c'.charCodeAt(0);
+
+        // Get instance from URL or default
+        const urlParams = new URLSearchParams(window.location.search);
+        const instanceName = urlParams.get('instance') || 'simple-default';
+        
+        // UI Elements
+        const terminalContainer = document.getElementById('terminal-container');
+        const outputElement = document.getElementById('terminal-output');
+        const inputElement = document.getElementById('terminal-input');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const clearDebugBtn = document.getElementById('clear-debug-btn');
+        const debugLog = document.getElementById('debug-log');
+        const connectionStatus = document.getElementById('connection-status');
+        const connectionText = document.getElementById('connection-text');
+        const messagesCount = document.getElementById('messages-count');
+        const contentLength = document.getElementById('content-length');
+        
+        // State
+        let socket = null;
+        let messageCount = 0;
+        
+        // Debug logging
+        function addDebugLog(message, data) {
+            const timestamp = new Date().toISOString();
+            let logItem = document.createElement('div');
+            
+            if (data) {
+                if (typeof data === 'object') {
+                    data = JSON.stringify(data);
+                }
+                logItem.textContent = `[${timestamp}] ${message} - ${data}`;
+            } else {
+                logItem.textContent = `[${timestamp}] ${message}`;
+            }
+            
+            debugLog.appendChild(logItem);
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+        
+        // Update connection status UI
+        function updateConnectionStatus(connected) {
+            if (connected) {
+                connectionStatus.classList.add('connected');
+                connectionText.textContent = 'Connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            } else {
+                connectionStatus.classList.remove('connected');
+                connectionText.textContent = 'Disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            }
+        }
+        
+        // Connect to WebSocket
+        function connect() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                addDebugLog('Already connected');
+                return;
+            }
+            
+            // Setup WebSocket connection
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            // Use the new WebSocket path structure that the server expects
+            const wsUrl = `${protocol}//${window.location.host}/ws/${instanceName}?format=ansi`;
+            
+            addDebugLog('Connecting to WebSocket', wsUrl);
+            addSystemMessage('Connecting to terminal...');
+            
+            try {
+                socket = new WebSocket(wsUrl);
+                
+                // Initialize xterm.js terminal for ANSI rendering
+                const term = new Terminal({
+                    cursorBlink: true,
+                    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                    fontSize: 14,
+                    theme: {
+                        background: '#000',
+                        foreground: '#fff'
+                    }
+                });
+                
+                // Clear the output container and mount xterm
+                outputElement.innerHTML = '';
+                term.open(outputElement);
+                
+                // Store the terminal instance for later use
+                window.terminal = term;
+                
+                // Set data type for backward compatibility
+                socket.binaryType = 'arraybuffer';
+                
+                socket.onopen = function() {
+                    addDebugLog('WebSocket connection established');
+                    addSystemMessage('Connected to terminal');
+                    updateConnectionStatus(true);
+                    
+                    // Send initial resize
+                    sendResize();
+                    
+                    // Start ping interval
+                    window.pingInterval = setInterval(sendPing, 30000);
+                };
+                
+                socket.onmessage = function(event) {
+                    messageCount++;
+                    messagesCount.textContent = messageCount;
+                    
+                    // Handle both binary and JSON messages
+                    try {
+                        // Try to parse as JSON first (new protocol)
+                        if (typeof event.data === 'string') {
+                            const data = JSON.parse(event.data);
+                            addDebugLog('Received JSON message', data);
+                            
+                            if (data.type === 'config') {
+                                // Handle config message
+                                addDebugLog('Received terminal config', data);
+                                // Could apply config settings to xterm here
+                                return;
+                            }
+                            
+                            if (data.content) {
+                                // Write ANSI content directly to xterm
+                                if (window.terminal) {
+                                    window.terminal.write(data.content);
+                                    addDebugLog(`Wrote ${data.content.length} bytes to xterm`);
+                                } else {
+                                    // Fallback if xterm init failed
+                                    displayOutput(data.content);
+                                }
+                                contentLength.textContent = data.content.length;
+                            }
+                        }
+                        // Handle binary message (old protocol)
+                        else if (event.data instanceof ArrayBuffer) {
+                            const data = new Uint8Array(event.data);
+                            if (data.length === 0) {
+                                addDebugLog('Received empty binary message');
+                                return;
+                            }
+                            
+                            const messageType = data[0];
+                            const payload = data.slice(1);
+                            
+                            switch (messageType) {
+                                case OUTPUT_MESSAGE:
+                                    const content = new TextDecoder().decode(payload);
+                                    // Write ANSI content directly to xterm
+                                    if (window.terminal) {
+                                        window.terminal.write(content);
+                                    } else {
+                                        // Fallback
+                                        displayOutput(content);
+                                    }
+                                    addDebugLog(`Received binary output, length: ${content.length}`);
+                                    contentLength.textContent = content.length;
+                                    break;
+                                case PONG_MESSAGE:
+                                    addDebugLog('Received pong');
+                                    break;
+                                default:
+                                    addDebugLog(`Unknown message type: ${messageType}`);
+                            }
+                        }
+                    } catch (e) {
+                        // Handle parse errors
+                        addDebugLog('Error processing message', e);
+                        
+                        // Try to output as text if all else fails
+                        if (typeof event.data === 'string') {
+                            if (window.terminal) {
+                                window.terminal.write(event.data);
+                            } else {
+                                displayOutput(event.data);
+                            }
+                            contentLength.textContent = event.data.length;
+                        }
+                    }
+                };
+                
+                socket.onclose = function(event) {
+                    addDebugLog(`WebSocket connection closed: ${event.code} ${event.reason}`);
+                    addSystemMessage('Connection lost. Click Connect to reconnect.');
+                    updateConnectionStatus(false);
+                    clearInterval(window.pingInterval);
+                };
+                
+                socket.onerror = function(error) {
+                    addDebugLog('WebSocket error', error);
+                    addSystemMessage('Error connecting to terminal');
+                    updateConnectionStatus(false);
+                };
+            } catch (error) {
+                addDebugLog('Failed to create WebSocket', error);
+                addSystemMessage('Failed to connect to terminal');
+                updateConnectionStatus(false);
+            }
+        }
+        
+        // Disconnect from WebSocket
+        function disconnect() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                addDebugLog('No active connection to disconnect');
+                return;
+            }
+            
+            addDebugLog('Disconnecting from WebSocket');
+            
+            // Send close message
+            sendMessage(CLOSE_MESSAGE, new Uint8Array(0));
+            
+            // Close socket after a short delay
+            setTimeout(() => {
+                socket.close();
+                socket = null;
+                updateConnectionStatus(false);
+                clearInterval(window.pingInterval);
+                addSystemMessage('Disconnected from terminal');
+            }, 100);
+        }
+        
+        // Display terminal output (fallback for when xterm.js is not available)
+        function displayOutput(content) {
+            // If xterm is available, use it
+            if (window.terminal) {
+                window.terminal.write(content);
+                return;
+            }
+            
+            // Otherwise use the basic HTML rendering
+            outputElement.innerHTML = '';
+            
+            if (!content || content.length === 0) {
+                addSystemMessage('Received empty content');
+                return;
+            }
+            
+            // Split content into lines
+            const lines = content.split('\n');
+            
+            // Add each line
+            for (const line of lines) {
+                const lineElement = document.createElement('div');
+                lineElement.className = 'terminal-line';
+                
+                // Basic handling of ANSI escape sequences
+                if (line.includes('\x1b[')) {
+                    // Create a pre-formatted span that preserves whitespace
+                    const span = document.createElement('pre');
+                    span.style.margin = '0';
+                    span.style.fontFamily = 'monospace';
+                    
+                    // In a real implementation, you'd convert ANSI codes to HTML/CSS
+                    // This is just a basic display that shows the raw codes
+                    span.textContent = line;
+                    
+                    lineElement.appendChild(span);
+                } else {
+                    lineElement.textContent = line;
+                }
+                
+                outputElement.appendChild(lineElement);
+            }
+            
+            // Scroll to bottom
+            outputElement.scrollTop = outputElement.scrollHeight;
+        }
+        
+        // Add system message
+        function addSystemMessage(text) {
+            const lineElement = document.createElement('div');
+            lineElement.className = 'terminal-line system';
+            lineElement.textContent = text;
+            outputElement.appendChild(lineElement);
+            outputElement.scrollTop = outputElement.scrollHeight;
+        }
+        
+        // Send terminal input
+        function sendInput(text) {
+            if (!socket || socket.readyState !== WebSocket.OPEN || !text) {
+                addDebugLog('Cannot send input - not connected or empty input');
+                return;
+            }
+            
+            try {
+                // Send as JSON for the new protocol
+                const message = {
+                    content: text,
+                    isCommand: false
+                };
+                
+                socket.send(JSON.stringify(message));
+                addDebugLog('Sent input as JSON', text);
+            } catch (error) {
+                // Fallback to binary protocol if JSON fails
+                const data = new TextEncoder().encode(text);
+                sendMessage(INPUT_MESSAGE, data);
+                addDebugLog('Sent input as binary fallback', text);
+            }
+        }
+        
+        // Send resize event
+        function sendResize() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            // Get container dimensions
+            const containerWidth = terminalContainer.clientWidth;
+            const containerHeight = terminalContainer.clientHeight;
+            
+            // Approximate character dimensions
+            const charWidth = 8;
+            const charHeight = 16;
+            
+            // Calculate columns and rows
+            const cols = Math.floor(containerWidth / charWidth);
+            const rows = Math.floor(containerHeight / charHeight);
+            
+            // Create resize message for the new JSON protocol
+            try {
+                const message = {
+                    cols: cols,
+                    rows: rows,
+                    isCommand: true,
+                    content: 'resize'
+                };
+                
+                socket.send(JSON.stringify(message));
+                addDebugLog('Sent resize as JSON', `${cols}x${rows}`);
+            } catch (error) {
+                // Fallback to binary protocol
+                const resizeData = JSON.stringify({ cols, rows });
+                sendMessage(RESIZE_MESSAGE, new TextEncoder().encode(resizeData));
+                addDebugLog('Sent resize as binary fallback', `${cols}x${rows}`);
+            }
+        }
+        
+        // Send ping
+        function sendPing() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            
+            sendMessage(PING_MESSAGE, new Uint8Array(0));
+            addDebugLog('Sent ping');
+        }
+        
+        // Send binary message
+        function sendMessage(type, data) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                addDebugLog('Cannot send message - not connected');
+                return;
+            }
+            
+            // Create message with type prefix
+            const message = new Uint8Array(data.length + 1);
+            message[0] = type;
+            message.set(data, 1);
+            
+            try {
+                socket.send(message);
+            } catch (error) {
+                addDebugLog('Failed to send message', error);
+            }
+        }
+        
+        // Clear output
+        function clearOutput() {
+            if (window.terminal) {
+                window.terminal.clear();
+            } else {
+                outputElement.innerHTML = '';
+            }
+            addSystemMessage('Output cleared');
+        }
+        
+        // Event listeners
+        inputElement.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                const text = inputElement.value;
+                if (text) {
+                    sendInput(text);
+                    inputElement.value = '';
+                }
+                e.preventDefault();
+            }
+        });
+        
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', disconnect);
+        clearBtn.addEventListener('click', clearOutput);
+        clearDebugBtn.addEventListener('click', function() {
+            debugLog.innerHTML = '';
+            addDebugLog('Debug log cleared');
+        });
+        
+        // Resize handling
+        window.addEventListener('resize', sendResize);
+        
+        // Initial setup
+        updateConnectionStatus(false);
+        addSystemMessage(`Terminal ready for instance: ${instanceName}`);
+        addSystemMessage('Click Connect to establish WebSocket connection');
+    });
+    // Hide info about not having terminal libraries since we now use xterm.js
+    document.addEventListener('DOMContentLoaded', function() {
+        const infoPanel = document.querySelector('.info-panel');
+        if (infoPanel) {
+            const newContent = document.createElement('p');
+            newContent.innerHTML = 'This is a direct terminal connection with ANSI support using <a href="https://xtermjs.org/" target="_blank">xterm.js</a> for proper rendering of colors and formatting.';
+            
+            // Replace the second paragraph
+            const paragraphs = infoPanel.querySelectorAll('p');
+            if (paragraphs.length > 1) {
+                infoPanel.replaceChild(newContent, paragraphs[1]);
+            }
+        }
+    });
+    </script>
+</body>
+</html>

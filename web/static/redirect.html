@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="0;url=easy-terminal.html">
+    <title>Redirecting to Easy Terminal...</title>
+    <script>
+        // Get all URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // If there's an instance parameter, pass it along to the easy terminal
+        const instanceName = urlParams.get('instance');
+        
+        if (instanceName) {
+            window.location.href = `easy-terminal.html?instance=${instanceName}`;
+        } else {
+            // If there's no instance parameter, just go to the easy terminal
+            window.location.href = 'easy-terminal.html';
+        }
+    </script>
+</head>
+<body>
+    <p>Redirecting to Easy Terminal interface...</p>
+    <p>If you are not redirected automatically, please click <a href="easy-terminal.html">here</a>.</p>
+</body>
+</html>

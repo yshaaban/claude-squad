@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +21,7 @@ type TerminalMonitor struct {
 	storage            *session.Storage
 	contentMap         map[string]string
 	hashMap            map[string][]byte
+	monitoredInstances []*session.Instance // Cached list of instances
 	subscribers        map[string][]chan types.TerminalUpdate
 	taskCache          map[string][]types.TaskItem
 	taskCacheTimestamp map[string]time.Time
@@ -60,17 +62,41 @@ func NewTerminalMonitor(storage *session.Storage) *TerminalMonitor {
 
 // Start begins monitoring terminal output.
 func (tm *TerminalMonitor) Start() {
-	tm.ticker = time.NewTicker(500 * time.Millisecond) // Faster polling for more responsive UI
+	tm.ticker = time.NewTicker(500 * time.Millisecond) // Polling for UI updates
 	go func() {
+		tm.refreshMonitoredInstances() // Initial load
+		
+		// Create ticker for refreshing instance list (much less frequent)
+		instanceRefreshTicker := time.NewTicker(10 * time.Second)
+		defer instanceRefreshTicker.Stop()
+		
 		for {
 			select {
 			case <-tm.ticker.C:
 				tm.checkForUpdates()
+			case <-instanceRefreshTicker.C:
+				tm.refreshMonitoredInstances() // Refresh list occasionally
 			case <-tm.done:
 				return
 			}
 		}
 	}()
+}
+
+// refreshMonitoredInstances updates the local cache of instances.
+// This is called periodically at a slow rate to detect new instances
+// or instances that have been removed.
+func (tm *TerminalMonitor) refreshMonitoredInstances() {
+	LogWebDebug("MONITOR: Refreshing monitored instances list")
+	instances, err := tm.storage.LoadInstances()
+	if err != nil {
+		log.FileOnlyErrorLog.Printf("MONITOR: Error loading instances for monitoring: %v", err)
+		return
+	}
+	tm.mutex.Lock()
+	tm.monitoredInstances = instances
+	tm.mutex.Unlock()
+	LogWebDebug("MONITOR: Refreshed, now monitoring %d instances", len(instances))
 }
 
 // Stop ends the monitoring.
@@ -165,6 +191,18 @@ func (tm *TerminalMonitor) GetContent(instanceTitle string) (string, bool) {
 	content, exists := tm.contentMap[instanceTitle]
 	contentLen := len(content)
 	tm.mutex.RUnlock()
+	
+	// Special case: Force retry for web mode instances (they might not be in cache yet)
+	if !exists && strings.HasPrefix(instanceTitle, "web-") {
+		log.FileOnlyInfoLog.Printf("Special handling for web instance %s - forcing content fetch", instanceTitle)
+		tm.checkForUpdates() // Force an update check
+		
+		// Check cache again after update
+		tm.mutex.RLock()
+		content, exists = tm.contentMap[instanceTitle] 
+		contentLen = len(content)
+		tm.mutex.RUnlock()
+	}
 	
 	if debugLogging {
 		log.FileOnlyInfoLog.Printf("Cache check for %s: exists=%v, content length=%d", 
@@ -490,53 +528,71 @@ func (tm *TerminalMonitor) Done() <-chan struct{} {
 
 // checkForUpdates polls for changes in terminal output.
 func (tm *TerminalMonitor) checkForUpdates() {
-	instances, err := tm.storage.LoadInstances()
-	if err != nil {
-		log.ErrorLog.Printf("Error loading instances: %v", err)
+	//LogWebDebug("MONITOR: Starting update check") // Too verbose
+	
+	tm.mutex.RLock()
+	instancesToCheck := make([]*session.Instance, len(tm.monitoredInstances))
+	copy(instancesToCheck, tm.monitoredInstances)
+	tm.mutex.RUnlock()
+	
+	if len(instancesToCheck) == 0 {
+		if tm.inactiveLogger == nil {
+			tm.inactiveLogger = log.NewEvery(30 * time.Second)
+		}
+		if tm.inactiveLogger.ShouldLog() {
+			log.FileOnlyInfoLog.Printf("TerminalMonitor: No instances currently monitored")
+		}
 		return
 	}
 	
 	activeInstances := 0
 	if debugLogging {
-		log.FileOnlyInfoLog.Printf("Found %d instances total", len(instances))
+		log.FileOnlyInfoLog.Printf("Found %d instances total to monitor", len(instancesToCheck))
 	}
 	
-	for _, instance := range instances {
+	for _, currentInstance := range instancesToCheck {
 		// Add debug logging to help diagnose active instance issues
 		if debugLogging {
 			log.FileOnlyInfoLog.Printf("Instance %s: Started=%v, Paused=%v", 
-				instance.Title, instance.Started(), instance.Paused())
+				currentInstance.Title, currentInstance.Started(), currentInstance.Paused())
 		}
+		
+		// Add enhanced debug logging for every instance
+		LogWebDebug("MONITOR: Checking instance %s: Started=%v, Paused=%v, Status=%v", 
+			currentInstance.Title, currentInstance.Started(), currentInstance.Paused(), currentInstance.Status)
 		
 		// Initialize logger for terminal monitoring if needed
 		if tm.nottyLogger == nil {
 			tm.nottyLogger = log.NewEvery(30 * time.Second)
 		}
 		
-		if !instance.Started() || instance.Paused() {
-			// Skip inactive instances
+		if !currentInstance.Started() || currentInstance.Paused() {
+			// LogWebDebug("MONITOR: Skipping inactive instance: %s", currentInstance.Title) // Too verbose
 			if debugLogging {
-				log.FileOnlyInfoLog.Printf("Skipping inactive instance: %s", instance.Title)
+				log.FileOnlyInfoLog.Printf("Skipping inactive instance: %s", currentInstance.Title)
 			}
 			continue
 		}
 		
+		// Log that we found an active instance
+		// LogWebDebug("MONITOR: Found ACTIVE instance: %s", currentInstance.Title) // Too verbose
+		
 		activeInstances++
 		if debugLogging {
-			log.FileOnlyInfoLog.Printf("Found active instance: %s", instance.Title)
+			log.FileOnlyInfoLog.Printf("Found active instance: %s", currentInstance.Title)
 		}
 		
 		// Get updated content
-		content, err := instance.Preview()
+		content, err := currentInstance.Preview()
 		if err != nil {
-			log.ErrorLog.Printf("Error capturing content for %s: %v", instance.Title, err)
+			log.ErrorLog.Printf("Error capturing content for %s: %v", currentInstance.Title, err)
 			continue
 		}
 		
 		// Skip empty content - only log in debug mode to avoid console spam
 		if content == "" {
 			if debugLogging {
-				log.WarningLog.Printf("Empty content received for active instance %s", instance.Title)
+				log.WarningLog.Printf("Empty content received for active instance %s", currentInstance.Title)
 			}
 			continue
 		}
@@ -547,61 +603,62 @@ func (tm *TerminalMonitor) checkForUpdates() {
 		newHash := hasher.Sum(nil)
 		
 		tm.mutex.Lock()
-		oldHash, exists := tm.hashMap[instance.Title]
+		oldHash, exists := tm.hashMap[currentInstance.Title]
 		hashChanged := !exists || !bytes.Equal(oldHash, newHash)
 		
 		// Only log content checks in debug mode
 		if debugLogging {
 			if exists {
 				log.FileOnlyInfoLog.Printf("Content check for %s: hashChanged=%v, contentLength=%d", 
-					instance.Title, hashChanged, len(content))
+					currentInstance.Title, hashChanged, len(content))
 			} else {
 				log.FileOnlyInfoLog.Printf("First content for %s: contentLength=%d", 
-					instance.Title, len(content))
+					currentInstance.Title, len(content))
 			}
 		}
 		
 		if hashChanged {
 			// Initialize content logger if not already done
 			if tm.contentLogger == nil {
-				tm.contentLogger = log.NewEvery(5 * time.Second)
+				tm.contentLogger = log.NewEvery(15 * time.Second) // Log less frequently
 			}
 			
 			// Rate-limit content change logs to avoid console spam
 			if tm.contentLogger.ShouldLog() {
-				log.FileOnlyInfoLog.Printf("Content changed for instance %s", instance.Title)
+				log.FileOnlyInfoLog.Printf("Content changed for instance %s", currentInstance.Title)
 			}
 			
 			// Update our content map and hash
-			tm.contentMap[instance.Title] = content
-			tm.hashMap[instance.Title] = newHash
+			tm.contentMap[currentInstance.Title] = content
+			tm.hashMap[currentInstance.Title] = newHash
 			
 			// Get prompt status
-			hasPrompt, isPromptUpdate := instance.HasUpdated()
+			// Pass content to HasUpdated to use cached version
+			updatedStatus, hasPrompt := currentInstance.HasUpdated(content)
 			
 			// Only log prompt state changes in debug mode
-			if isPromptUpdate && debugLogging {
-				log.FileOnlyInfoLog.Printf("Prompt state change for %s: hasPrompt=%v", 
-					instance.Title, hasPrompt)
+			if updatedStatus && debugLogging { // updatedStatus implies a change that might include prompt
+				log.FileOnlyInfoLog.Printf("State/prompt change for %s: hasPrompt=%v",
+					currentInstance.Title, hasPrompt)
 			}
 			
 			// Create update
 			update := types.TerminalUpdate{
-				InstanceTitle: instance.Title,
+				InstanceTitle: currentInstance.Title,
 				Content:       content,
 				Timestamp:     time.Now(),
-				Status:        string(instance.Status),
+				Status:        string(currentInstance.Status),
 				HasPrompt:     hasPrompt,
 			}
 			
 			// Get subscribers
-			subscribers := tm.subscribers[instance.Title]
+			subscribers := tm.subscribers[currentInstance.Title]
 			numSubscribers := len(subscribers)
 			
 			// Only log broadcast details in debug mode
 			if debugLogging && numSubscribers > 0 {
 				log.FileOnlyInfoLog.Printf("Broadcasting update to %d subscribers for %s", 
-					numSubscribers, instance.Title)
+					numSubscribers, currentInstance.Title)
 			}
 			
 			tm.mutex.Unlock()
@@ -615,19 +672,19 @@ func (tm *TerminalMonitor) checkForUpdates() {
 				default:
 					// This is a genuine warning - keep it
 					log.WarningLog.Printf("Channel full, skipped update for a subscriber of %s", 
-						instance.Title)
+						currentInstance.Title)
 				}
 			}
 			
 			// Only log detailed results in debug mode
 			if debugLogging && numSubscribers > 0 {
 				log.FileOnlyInfoLog.Printf("Sent updates to %d/%d subscribers for %s", 
-					sentCount, numSubscribers, instance.Title)
+					sentCount, numSubscribers, currentInstance.Title)
 			}
 			
 			// When content changes, invalidate task cache
 			tm.mutex.Lock()
-			delete(tm.taskCacheTimestamp, instance.Title)
+			delete(tm.taskCacheTimestamp, currentInstance.Title)
 			tm.mutex.Unlock()
 		} else {
 			tm.mutex.Unlock()
@@ -644,6 +701,8 @@ func (tm *TerminalMonitor) checkForUpdates() {
 	if tm.inactiveLogger.ShouldLog() {
 		// Use file-only logger to prevent console pollution in web mode
 		// This will only log to file, never to stdout/stderr
-		log.FileOnlyInfoLog.Printf("No active instances to monitor")
+		if activeInstances == 0 {
+			log.FileOnlyInfoLog.Printf("TerminalMonitor: No active instances to monitor.")
+		}
 	}
 }

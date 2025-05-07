@@ -34,6 +34,8 @@ type Instance struct {
 	// Path is the path to the workspace.
 	Path string
 	// Branch is the branch of the instance.
+	// This field is primarily for non-InPlace instances.
+	// For InPlace instances, it might reflect the current git branch of the Path.
 	Branch string
 	// Status is the status of the instance.
 	Status Status
@@ -56,6 +58,9 @@ type Instance struct {
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
+
+	// lastPreviewContent stores the most recently captured preview content
+	lastPreviewContent string
 
 	// The below fields are initialized upon calling Start().
 
@@ -134,11 +139,36 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	if instance.Paused() {
+		log.FileOnlyInfoLog.Printf("FromInstanceData: Instance %s is PAUSED, not starting tmux", instance.Title)
 		instance.started = true
 		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
 	} else {
-		if err := instance.Start(false); err != nil {
-			return nil, err
+		// Check if a tmux session already exists with this name
+		tmuxSessionName := tmux.ToClaudeSquadTmuxName(instance.Title)
+		sessionExists := tmux.DoesSessionExist(tmuxSessionName)
+		log.FileOnlyInfoLog.Printf("FromInstanceData: Tmux session %s exists: %v", tmuxSessionName, sessionExists)
+		
+		if sessionExists {
+			// If session already exists, just restore it instead of creating a new one
+			log.FileOnlyInfoLog.Printf("FromInstanceData: Using existing tmux session for %s", instance.Title)
+			instance.started = true
+			instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
+			
+			// Don't try to start a new session, just set up our tracking of the existing one
+			if err := instance.tmuxSession.Restore(); err != nil {
+				log.FileOnlyWarningLog.Printf("FromInstanceData: Non-fatal error restoring existing tmux session %s: %v", 
+					instance.Title, err)
+			} else {
+				log.FileOnlyInfoLog.Printf("FromInstanceData: Successfully restored existing tmux session for %s", 
+					instance.Title)
+			}
+		} else {
+			// If session does not exist, it means it's not running.
+			// We don't automatically start it here. Instance.Start() is for explicit starting.
+			// We just initialize the tmuxSession object for potential future use.
+			log.FileOnlyInfoLog.Printf("FromInstanceData: Tmux session for %s does not exist. Will be created if Instance.Start() is called.", instance.Title)
+			instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
+			instance.started = false // Explicitly mark as not started if tmux session isn't found
 		}
 	}
 
@@ -322,14 +352,46 @@ func (i *Instance) Preview() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", nil
 	}
-	return i.tmuxSession.CapturePaneContent()
+	
+	// Add more detailed failure logging
+	content, err := i.tmuxSession.CapturePaneContent()
+	if err != nil {
+		log.FileOnlyErrorLog.Printf("Error in Preview(): Failed to capture content for %s: %v", i.Title, err)
+		return "", err
+	}
+	
+	if content == "" {
+		// Try again with explicit options
+		log.FileOnlyInfoLog.Printf("Preview: Got empty content for %s, retrying with explicit options", i.Title)
+		content, err = i.tmuxSession.CapturePaneContentWithOptions("-20", "+20")
+		if err != nil {
+			log.FileOnlyErrorLog.Printf("Error in Preview(): Failed retry for %s: %v", i.Title, err)
+			return "", err
+		}
+	}
+	
+	return content, nil
 }
 
-func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
+// HasUpdated checks if the tmux pane content has changed since the last tick.
+// It can optionally use provided content to avoid re-fetching.
+// It also returns true if the tmux pane has a prompt for aider or claude code.
+func (i *Instance) HasUpdated(optionalCurrentContent ...string) (updated bool, hasPrompt bool) {
+	var currentContent string
+	var err error
+	if len(optionalCurrentContent) > 0 && optionalCurrentContent[0] != "" {
+		currentContent = optionalCurrentContent[0]
+	} else {
+		currentContent, err = i.Preview() // Fallback to fetching if not provided or empty
+	}
 	if !i.started {
 		return false, false
 	}
-	return i.tmuxSession.HasUpdated()
+	if err != nil { // if Preview itself failed
+		log.FileOnlyErrorLog.Printf("error getting content for HasUpdated check for %s: %v", i.Title, err)
+		return false, false
+	}
+	return i.tmuxSession.HasUpdated(currentContent) // Pass content to avoid re-capture
 }
 
 // TapEnter sends an enter key press to the tmux session if AutoYes is enabled.
@@ -349,12 +411,28 @@ func (i *Instance) Attach() (chan struct{}, error) {
 	return i.tmuxSession.Attach()
 }
 
+// Detach detaches from the tmux session
+func (i *Instance) Detach() {
+	if !i.started {
+		return
+	}
+	i.tmuxSession.Detach()
+}
+
 func (i *Instance) SetPreviewSize(width, height int) error {
 	if !i.started || i.Status == Paused {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
 			"is paused")
 	}
 	return i.tmuxSession.SetDetachedSize(width, height)
+}
+
+// GetTmuxSessionName returns the name of the tmux session for this instance
+func (i *Instance) GetTmuxSessionName() string {
+	if !i.started || i.tmuxSession == nil {
+		return ""
+	}
+	return i.tmuxSession.SanitizedName()
 }
 
 // GetGitWorktree returns the git worktree for the instance

@@ -248,14 +248,22 @@ func (m *Menu) String() string {
 	// Add web server info if enabled
 	if m.webServerEnabled && m.webServerPort > 0 {
 		webInfo := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("12")). // Blue color
+			Foreground(lipgloss.AdaptiveColor{Light: "#007BFF", Dark: "#00AFFF"}). // Blue color
 			Render(fmt.Sprintf(" Web: http://%s:%d", m.webServerHost, m.webServerPort))
 		
-		// Place the menu text on the left and web info on the right
+		// Calculate available width for menuText to avoid overlap
+		menuTextWidth := lipgloss.Width(menuText)
+		webInfoWidth := lipgloss.Width(webInfo)
+		spacerWidth := m.width - menuTextWidth - webInfoWidth
+		spacer := ""
+		if spacerWidth > 0 {
+			spacer = strings.Repeat(" ", spacerWidth)
+		}
 		menuText = lipgloss.JoinHorizontal(
-			lipgloss.Left,
+			lipgloss.Top, // Use Top alignment
 			menuStyle.Render(menuText),
-			webInfo,
+			spacer,
+			menuStyle.Render(webInfo), // Render webInfo with menuStyle for consistency or a dedicated one
 		)
 	} else {
 		menuText = menuStyle.Render(menuText)

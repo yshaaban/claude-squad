@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terminal Rendering Test</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f3f4f6;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .test-card {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .terminal-container {
+            background-color: #000;
+            color: #fff;
+            font-family: monospace;
+            padding: 10px;
+            border-radius: 5px;
+            height: 300px;
+            overflow: auto;
+            margin-top: 10px;
+            white-space: pre-wrap;
+        }
+        .btn {
+            background-color: #4f46e5;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        .btn:hover {
+            background-color: #4338ca;
+        }
+        .test-controls {
+            margin-bottom: 15px;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin-bottom: 10px;
+            font-family: monospace;
+            padding: 8px;
+        }
+        .fallback {
+            background-color: #000;
+            color: #fff;
+            padding: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            height: 100%;
+            overflow: auto;
+        }
+        .styled-fallback {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: monospace;
+            white-space: pre-wrap;
+            overflow: auto;
+            padding: 10px;
+        }
+        .test-log {
+            max-height: 200px;
+            overflow: auto;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            font-family: monospace;
+            margin-top: 10px;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+        }
+        .log-timestamp {
+            color: #888;
+            font-size: 0.8em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Terminal Rendering Test</h1>
+
+        <div class="test-card">
+            <h2>1. Plain Content Display</h2>
+            <p>Testing direct content display with fallback rendering in a div.</p>
+            
+            <div class="test-controls">
+                <textarea id="test1-input">This is a sample terminal output.
+$ ls -la
+total 0
+drwxr-xr-x   5 user  group   160 May  6 12:34 .
+drwxr-xr-x  14 user  group   448 May  5 09:23 ..
+-rw-r--r--   1 user  group   321 May  6 12:30 file1.txt
+-rw-r--r--   1 user  group   543 May  6 11:45 file2.txt
+
+$ echo "Hello, world!"
+Hello, world!
+</textarea>
+                <button class="btn" onclick="displayContent('test1-terminal', 'test1-input')">Display Content</button>
+                <button class="btn" onclick="clearTerminal('test1-terminal')">Clear Terminal</button>
+            </div>
+            
+            <div id="test1-terminal" class="terminal-container"></div>
+        </div>
+
+        <div class="test-card">
+            <h2>2. Content Append Test</h2>
+            <p>Testing content appending for streaming simulation.</p>
+            
+            <div class="test-controls">
+                <textarea id="test2-input">Additional content to append</textarea>
+                <button class="btn" onclick="appendContent('test2-terminal', 'test2-input')">Append Content</button>
+                <button class="btn" onclick="clearTerminal('test2-terminal')">Clear Terminal</button>
+                <button class="btn" onclick="simulateStream('test2-terminal')">Simulate Streaming</button>
+            </div>
+            
+            <div id="test2-terminal" class="terminal-container">Initial content in terminal.
+$ 
+</div>
+        </div>
+
+        <div class="test-card">
+            <h2>3. Styled Fallback Test</h2>
+            <p>Testing terminal rendering with various styling techniques.</p>
+            
+            <div class="test-controls">
+                <textarea id="test3-input">$ echo "Testing styled terminal output"
+Testing styled terminal output
+
+$ ls -la
+total 0
+drwxr-xr-x   5 user  group   160 May  6 12:34 .
+drwxr-xr-x  14 user  group   448 May  5 09:23 ..
+-rw-r--r--   1 user  group   321 May  6 12:30 file1.txt
+-rw-r--r--   1 user  group   543 May  6 11:45 file2.txt</textarea>
+                <button class="btn" onclick="simpleContentDisplay('test3-terminal', 'test3-input')">Simple Display</button>
+                <button class="btn" onclick="styleTextContentDisplay('test3-terminal', 'test3-input')">Text Content</button>
+                <button class="btn" onclick="styleDomAppend('test3-terminal', 'test3-input')">DOM Append</button>
+                <button class="btn" onclick="clearTerminal('test3-terminal')">Clear Terminal</button>
+            </div>
+            
+            <div style="position: relative; height: 300px; background: #000; border-radius: 5px;">
+                <div id="test3-terminal" class="styled-fallback"></div>
+            </div>
+        </div>
+
+        <div class="test-card">
+            <h2>Test Log</h2>
+            <div id="test-log" class="test-log"></div>
+        </div>
+    </div>
+
+    <script>
+        // Logging function
+        function logTest(message) {
+            const logElement = document.getElementById('test-log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            
+            const timestamp = document.createElement('span');
+            timestamp.className = 'log-timestamp';
+            timestamp.textContent = new Date().toLocaleTimeString() + ' - ';
+            
+            const content = document.createElement('span');
+            content.textContent = message;
+            
+            entry.appendChild(timestamp);
+            entry.appendChild(content);
+            
+            logElement.appendChild(entry);
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        // Simple content display
+        function displayContent(terminalId, inputId) {
+            const terminal = document.getElementById(terminalId);
+            const content = document.getElementById(inputId).value;
+            
+            logTest(`Displaying content in ${terminalId} (length: ${content.length})`);
+            terminal.textContent = content;
+        }
+
+        // Clear terminal
+        function clearTerminal(terminalId) {
+            const terminal = document.getElementById(terminalId);
+            logTest(`Clearing terminal ${terminalId}`);
+            terminal.textContent = '';
+        }
+
+        // Append content
+        function appendContent(terminalId, inputId) {
+            const terminal = document.getElementById(terminalId);
+            const content = document.getElementById(inputId).value;
+            
+            logTest(`Appending content to ${terminalId} (length: ${content.length})`);
+            terminal.textContent += '\n' + content;
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        // Simulate streaming content
+        function simulateStream(terminalId) {
+            const terminal = document.getElementById(terminalId);
+            const streamLines = [
+                "$ git status",
+                "On branch main",
+                "Your branch is up to date with 'origin/main'.",
+                "",
+                "Changes not staged for commit:",
+                "  (use \"git add <file>...\" to update what will be committed)",
+                "  (use \"git restore <file>...\" to discard changes in working directory)",
+                "\tmodified:   src/main.js",
+                "\tmodified:   src/components/App.js",
+                "",
+                "$ "
+            ];
+            
+            let lineIndex = 0;
+            
+            logTest(`Starting streaming simulation in ${terminalId}`);
+            
+            const interval = setInterval(() => {
+                if (lineIndex < streamLines.length) {
+                    terminal.textContent += streamLines[lineIndex] + '\n';
+                    terminal.scrollTop = terminal.scrollHeight;
+                    lineIndex++;
+                    logTest(`Streamed line ${lineIndex} of ${streamLines.length}`);
+                } else {
+                    clearInterval(interval);
+                    logTest('Streaming simulation completed');
+                }
+            }, 500);
+        }
+
+        // Simple content display for styled test
+        function simpleContentDisplay(terminalId, inputId) {
+            const terminal = document.getElementById(terminalId);
+            const content = document.getElementById(inputId).value;
+            
+            logTest(`Simple display in ${terminalId} using textContent (length: ${content.length})`);
+            
+            terminal.textContent = content;
+        }
+
+        // Style text content display
+        function styleTextContentDisplay(terminalId, inputId) {
+            const terminal = document.getElementById(terminalId);
+            const content = document.getElementById(inputId).value;
+            
+            logTest(`Styled display in ${terminalId} using innerHTML (length: ${content.length})`);
+            
+            // Clear terminal
+            terminal.innerHTML = '';
+            
+            // Set styles
+            terminal.style.backgroundColor = '#000';
+            terminal.style.color = '#fff';
+            terminal.style.fontFamily = 'monospace';
+            terminal.style.whiteSpace = 'pre-wrap';
+            terminal.style.padding = '10px';
+            terminal.style.width = '100%';
+            terminal.style.height = '100%';
+            terminal.style.overflow = 'auto';
+            
+            // Escape HTML
+            const escapedContent = content
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+            
+            terminal.innerHTML = escapedContent;
+        }
+
+        // Style DOM append
+        function styleDomAppend(terminalId, inputId) {
+            const terminal = document.getElementById(terminalId);
+            const content = document.getElementById(inputId).value;
+            
+            logTest(`DOM append display in ${terminalId} (length: ${content.length})`);
+            
+            // Clear terminal
+            terminal.innerHTML = '';
+            
+            // Apply styles
+            terminal.style.backgroundColor = '#000';
+            terminal.style.color = '#fff';
+            terminal.style.fontFamily = 'monospace';
+            terminal.style.whiteSpace = 'pre-wrap';
+            
+            // Split into lines for better control
+            const lines = content.split('\n');
+            
+            // Create elements for each line
+            lines.forEach(line => {
+                const lineElement = document.createElement('div');
+                lineElement.textContent = line;
+                terminal.appendChild(lineElement);
+            });
+            
+            // Add timestamp
+            const timestamp = document.createElement('div');
+            timestamp.style.color = '#888';
+            timestamp.style.marginTop = '10px';
+            timestamp.style.fontSize = '0.8em';
+            timestamp.textContent = `--- Updated at ${new Date().toLocaleTimeString()} ---`;
+            terminal.appendChild(timestamp);
+            
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        // Initialize with a log entry
+        document.addEventListener('DOMContentLoaded', () => {
+            logTest('Terminal rendering test page loaded');
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Basic Terminal Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background-color: #f0f0f0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .terminal {
+            background-color: black;
+            color: white;
+            height: 400px;
+            padding: 10px;
+            overflow: auto;
+            margin-bottom: 20px;
+            white-space: pre-wrap;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 8px 12px;
+            margin-right: 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .connected {
+            color: green;
+            font-weight: bold;
+        }
+        .disconnected {
+            color: red;
+            font-weight: bold;
+        }
+        .log {
+            height: 200px;
+            overflow: auto;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border: 1px solid #ddd;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Basic Terminal Test</h1>
+        
+        <div class="controls">
+            <label for="instance">Instance Name:</label>
+            <input type="text" id="instance" value="simple-default">
+            <button id="connect">Connect</button>
+            <button id="disconnect">Disconnect</button>
+            <button id="clear">Clear</button>
+        </div>
+        
+        <div class="status">
+            Status: <span id="status" class="disconnected">Disconnected</span>
+            <span id="message"></span>
+        </div>
+        
+        <h2>Terminal Output</h2>
+        <div class="terminal" id="output"></div>
+        
+        <h2>Debug Log</h2>
+        <div class="log" id="log"></div>
+    </div>
+
+    <script>
+        // Elements
+        const instanceInput = document.getElementById('instance');
+        const connectButton = document.getElementById('connect');
+        const disconnectButton = document.getElementById('disconnect');
+        const clearButton = document.getElementById('clear');
+        const statusElement = document.getElementById('status');
+        const messageElement = document.getElementById('message');
+        const outputElement = document.getElementById('output');
+        const logElement = document.getElementById('log');
+        
+        // State
+        let socket = null;
+        
+        // Logging
+        function log(message) {
+            const date = new Date();
+            const timestamp = date.toLocaleTimeString();
+            const logLine = document.createElement('div');
+            logLine.textContent = `[${timestamp}] ${message}`;
+            logElement.appendChild(logLine);
+            logElement.scrollTop = logElement.scrollHeight;
+            console.log(`[${timestamp}] ${message}`);
+        }
+        
+        // Update status
+        function updateStatus(connected, message = '') {
+            statusElement.textContent = connected ? 'Connected' : 'Disconnected';
+            statusElement.className = connected ? 'connected' : 'disconnected';
+            messageElement.textContent = message ? ` (${message})` : '';
+        }
+        
+        // Connect to WebSocket
+        function connect() {
+            if (socket) {
+                log('Already connected, disconnecting first');
+                disconnect();
+            }
+            
+            const instanceName = instanceInput.value.trim();
+            if (!instanceName) {
+                log('Error: Please enter an instance name');
+                return;
+            }
+            
+            log(`Connecting to instance: ${instanceName}`);
+            updateStatus(false, 'Connecting...');
+            
+            try {
+                // Construct the WebSocket URL
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/terminal/${instanceName}`;
+                
+                log(`WebSocket URL: ${wsUrl}`);
+                
+                // Create the WebSocket connection
+                socket = new WebSocket(wsUrl);
+                socket.binaryType = 'arraybuffer';
+                
+                // Setup event handlers
+                socket.onopen = function() {
+                    log('WebSocket connection established');
+                    updateStatus(true);
+                    
+                    // Send a simple message to the server
+                    const message = new Uint8Array(1);
+                    message[0] = 'p'.charCodeAt(0); // Ping message
+                    socket.send(message);
+                    log('Sent ping message');
+                };
+                
+                socket.onclose = function(event) {
+                    log(`WebSocket connection closed: Code ${event.code}${event.reason ? `, Reason: ${event.reason}` : ''}`);
+                    updateStatus(false);
+                    socket = null;
+                };
+                
+                socket.onerror = function(error) {
+                    log(`WebSocket error: ${error}`);
+                    updateStatus(false, 'Error');
+                };
+                
+                socket.onmessage = function(event) {
+                    if (event.data instanceof ArrayBuffer) {
+                        const data = new Uint8Array(event.data);
+                        
+                        log(`Received binary message: ${data.length} bytes`);
+                        
+                        if (data.length > 0) {
+                            const type = data[0];
+                            const content = data.length > 1 ? new TextDecoder().decode(data.slice(1)) : '';
+                            
+                            log(`Message type: ${String.fromCharCode(type)} (${type})`);
+                            
+                            if (type === 'o'.charCodeAt(0)) {
+                                // Output message
+                                log(`Received output: ${content.length} chars`);
+                                outputElement.textContent = content;
+                                outputElement.scrollTop = outputElement.scrollHeight;
+                            } else if (type === 'P'.charCodeAt(0)) {
+                                // Pong message
+                                log('Received pong message');
+                            } else {
+                                log(`Unknown message type: ${type}`);
+                            }
+                        } else {
+                            log('Received empty binary message');
+                        }
+                    } else if (typeof event.data === 'string') {
+                        log(`Received text message: ${event.data.length} chars`);
+                        try {
+                            const data = JSON.parse(event.data);
+                            log(`Parsed JSON message: ${JSON.stringify(data)}`);
+                            
+                            if (data.content) {
+                                outputElement.textContent = data.content;
+                                outputElement.scrollTop = outputElement.scrollHeight;
+                            }
+                        } catch (e) {
+                            log(`Error parsing message: ${e.message}`);
+                            outputElement.textContent = event.data;
+                        }
+                    }
+                };
+            } catch (error) {
+                log(`Error creating WebSocket: ${error.message}`);
+                updateStatus(false, 'Error');
+            }
+        }
+        
+        // Disconnect WebSocket
+        function disconnect() {
+            if (!socket) {
+                log('Not connected');
+                return;
+            }
+            
+            log('Disconnecting...');
+            
+            try {
+                socket.close();
+            } catch (error) {
+                log(`Error closing socket: ${error.message}`);
+            }
+            
+            socket = null;
+            updateStatus(false);
+        }
+        
+        // Clear output
+        function clear() {
+            outputElement.textContent = '';
+            log('Cleared output');
+        }
+        
+        // Add event listeners
+        connectButton.addEventListener('click', connect);
+        disconnectButton.addEventListener('click', disconnect);
+        clearButton.addEventListener('click', clear);
+        
+        // Auto-detect instance from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const instanceParam = urlParams.get('instance');
+        if (instanceParam) {
+            instanceInput.value = instanceParam;
+        }
+        
+        // Initialize
+        log('Page loaded');
+        updateStatus(false);
+    </script>
+</body>
+</html>

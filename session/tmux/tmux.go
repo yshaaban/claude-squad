@@ -56,10 +56,16 @@ const TmuxPrefix = "claudesquad_"
 
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 
-func toClaudeSquadTmuxName(str string) string {
+// ToClaudeSquadTmuxName converts a string to a valid tmux session name with the claude squad prefix
+func ToClaudeSquadTmuxName(str string) string {
 	str = whiteSpaceRegex.ReplaceAllString(str, "")
 	str = strings.ReplaceAll(str, ".", "_") // tmux replaces all . with _
 	return fmt.Sprintf("%s%s", TmuxPrefix, str)
+}
+
+// For backward compatibility
+func toClaudeSquadTmuxName(str string) string {
+	return ToClaudeSquadTmuxName(str)
 }
 
 func NewTmuxSession(name string, program string) *TmuxSession {
@@ -68,6 +74,11 @@ func NewTmuxSession(name string, program string) *TmuxSession {
 		sanitizedName: toClaudeSquadTmuxName(name),
 		program:       program,
 	}
+}
+
+// SanitizedName returns the sanitized tmux session name
+func (t *TmuxSession) SanitizedName() string {
+	return t.sanitizedName
 }
 
 // Start creates and starts a new tmux session, then attaches to it. Program is the command to run in
@@ -235,12 +246,13 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
-// HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
-// the tmux pane has a prompt for aider or claude code.
-func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
-	content, err := t.CapturePaneContent()
-	if err != nil {
-		log.FileOnlyErrorLog.Printf("error capturing pane content in status monitor: %v", err)
+// HasUpdated checks if the tmux pane content has changed since the last check.
+// It uses the provided content string.
+// It also returns true if the tmux pane has a prompt for aider or claude code.
+func (t *TmuxSession) HasUpdated(content string) (updated bool, hasPrompt bool) {
+	if t.monitor == nil {
+		// Should not happen if session is properly started/restored
+		log.FileOnlyErrorLog.Printf("TmuxSession.monitor is nil for session %s during HasUpdated check", t.Name)
 		return false, false
 	}
 
@@ -329,6 +341,22 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 func (t *TmuxSession) Detach() {
 	// TODO: control flow is a bit messy here. If there's an error,
 	// I'm not sure if we get into a bad state. Needs testing.
+	
+	// Check if we have required fields before continuing
+	if t.attachCh == nil {
+		log.FileOnlyErrorLog.Println("Detach called with nil attachCh, skipping detach operation")
+		return
+	}
+	
+	if t.cancel == nil || t.ctx == nil || t.wg == nil {
+		log.FileOnlyErrorLog.Println("Detach called with incomplete context, attempting safe cleanup")
+		if t.attachCh != nil {
+			close(t.attachCh)
+			t.attachCh = nil
+		}
+		return
+	}
+	
 	defer func() {
 		close(t.attachCh)
 		t.attachCh = nil
@@ -338,34 +366,36 @@ func (t *TmuxSession) Detach() {
 	}()
 
 	// Close the attached pty session.
-	err := t.ptmx.Close()
-	if err != nil {
-		// Log the error but don't panic
-		msg := fmt.Sprintf("error closing attach pty session: %v", err)
-		log.FileOnlyErrorLog.Println(msg)
-		log.FileOnlyErrorLog.Println("attempting to continue despite PTY close error")
-	}
-	
-	// Attach goroutines should die on EOF due to the ptmx closing. Call
-	// t.Restore to set a new t.ptmx.
-	if err = t.Restore(); err != nil {
-		// Log the error but don't panic
-		msg := fmt.Sprintf("error restoring tmux session: %v", err)
-		log.ErrorLog.Println(msg)
-		log.ErrorLog.Println("attempting recovery by creating a minimal PTY replacement")
+	if t.ptmx != nil {
+		err := t.ptmx.Close()
+		if err != nil {
+			// Log the error but don't panic
+			msg := fmt.Sprintf("error closing attach pty session: %v", err)
+			log.FileOnlyErrorLog.Println(msg)
+			log.FileOnlyErrorLog.Println("attempting to continue despite PTY close error")
+		}
 		
-		// Try to create a fallback PTY to maintain the invariant
-		r, w, pipeErr := os.Pipe()
-		if pipeErr != nil {
-			log.ErrorLog.Printf("failed to create pipe for recovery: %v", pipeErr)
-			// If we absolutely can't create any kind of file descriptor, 
-			// still try to continue with a nil ptmx - better than crashing the app
-		} else {
-			// Use the read end of the pipe as a minimal PTY replacement
-			t.ptmx = r
-			// Close the write end since we won't use it
-			w.Close()
-			log.FileOnlyErrorLog.Println("created minimal PTY replacement for recovery")
+		// Attach goroutines should die on EOF due to the ptmx closing. Call
+		// t.Restore to set a new t.ptmx.
+		if err = t.Restore(); err != nil {
+			// Log the error but don't panic
+			msg := fmt.Sprintf("error restoring tmux session: %v", err)
+			log.ErrorLog.Println(msg)
+			log.ErrorLog.Println("attempting recovery by creating a minimal PTY replacement")
+			
+			// Try to create a fallback PTY to maintain the invariant
+			r, w, pipeErr := os.Pipe()
+			if pipeErr != nil {
+				log.ErrorLog.Printf("failed to create pipe for recovery: %v", pipeErr)
+				// If we absolutely can't create any kind of file descriptor, 
+				// still try to continue with a nil ptmx - better than crashing the app
+			} else {
+				// Use the read end of the pipe as a minimal PTY replacement
+				t.ptmx = r
+				// Close the write end since we won't use it
+				w.Close()
+				log.FileOnlyErrorLog.Println("created minimal PTY replacement for recovery")
+			}
 		}
 	}
 

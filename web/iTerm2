@@ -1,0 +1,174 @@
+========================================
+Claude Squad Terminal WebSocket E2E Test
+========================================
+[0;34mBuilding Claude Squad...[0m
+[0;32m✓ Build successful[0m
+[0;34mStarting Claude Squad in Simple Mode with web monitoring...[0m
+[1;33mWaiting for server to start...[0m
+.INFO: 2025/05/06 12:52:54 server.go:71: Authentication disabled for localhost
+INFO: 2025/05/06 12:52:54 web.go:35: Web monitoring server started on :8099
+INFO: 2025/05/06 12:52:54 server.go:141: Starting HTTP server on :8099
+[?25l[?1049h[2J[H[?25l[?2004h[?1002h[?1006h[H           │                │            
+           │                │            
+           │                │            
+ Instances │                │            
+           │                │            
+           │                │            
+  1.   SIMP│                │6-125253 ⠙  
+      Ꮧ-   │                │            
+           │   Enter        │            
+           │                │            
+           ╰────────────────╯            [11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠹  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠸  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠼  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠴  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠦  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠧  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠇  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠏  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠋  
+
+
+
+[11;H.[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠙  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ⠹  
+
+
+
+[11;H[H
+
+
+
+
+
+  1.   SIMP│                │6-125253 ●  
+
+
+
+[11;H..[H                                                                                                
+                                                                                                
+                                                                                                
+                             Instances  auto-yes  simple                                        
+                                                                                                
+                                                                                                
+                              1.   SIMPLE  simple-20250506-125253 ●                             
+                                  Ꮧ-                                                            
+                                                                                                
+n new • D kill │ ↵/o open • N new with prompt • p push branch │ tab switch tab • ? help • q quit
+                                                                                                [11;H.2025/05/06 12:52:59 "GET http://localhost:8099/api/status HTTP/1.1" from [::1]:59453 - 200 44B in 40.917µs
+2025/05/06 12:52:59 "GET http://localhost:8099/api/instances HTTP/1.1" from [::1]:59452 - 200 17B in 142.583µs
+.....
+[0;34mTesting web server...[0m
+2025/05/06 12:53:03 "GET http://localhost:8099/ HTTP/1.1" from [::1]:59475 - 200 48309B in 1.406958ms
+[0;32m✓ Web UI is responding[0m
+[0;34mCreating WebSocket test client...[0m
+[1;33mInstalling WebSocket client dependencies...[0m
+2025/05/06 12:53:04 "GET http://localhost:8099/api/instances HTTP/1.1" from [::1]:59452 - 200 17B in 35.208µs
+2025/05/06 12:53:04 "GET http://localhost:8099/api/status HTTP/1.1" from [::1]:59453 - 200 44B in 43.667µs
+
+up to date, audited 2 packages in 400ms
+
+found 0 vulnerabilities
+[0;34mRunning WebSocket terminal test...[0m
+Starting WebSocket terminal test...
+2025/05/06 12:53:04 "GET http://localhost:8099/api/instances HTTP/1.1" from [::1]:59477 - 200 17B in 28.666µs
+ERROR: No instances found
+
+[0;34mCleaning up...[0m
+[0;32mDone![0m
+INFO: 2025/05/06 12:53:04 server_unix.go:19: Received signal: terminated
+INFO: 2025/05/06 12:53:04 server_unix.go:24: Shutting down web server due to signal: terminated
+[2K[?2004l[?25h[?1002l[?1003l[?1006l[?1049l[?25hINFO: 2025/05/06 12:53:04 daemon.go:112: started daemon child process with PID: 26648

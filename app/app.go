@@ -249,8 +249,12 @@ func newHome(ctx context.Context, startOptions StartOptions) *home {
 	
 	// Start web server if enabled
 	if appConfig.WebServerEnabled {
+		log.InfoLog.Printf("Web server enabled, attempting to start on %s:%d", appConfig.WebServerHost, appConfig.WebServerPort)
 		if err := h.StartWebServer(); err != nil {
 			h.errBox.SetError(fmt.Errorf("Failed to start web server: %w", err))
+		} else {
+			// Update menu with web server info
+			h.menu.SetWebServerInfo(true, appConfig.WebServerHost, appConfig.WebServerPort)
 		}
 	}
 
@@ -300,8 +304,9 @@ func (m *home) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			time.Sleep(100 * time.Millisecond)
-			return previewTickMsg{}
+			time.Sleep(100 * time.Millisecond) // Initial quick update
+			// Subsequent updates will be slower to reduce load
+			return previewTickMsg{isInitial: true}
 		},
 		tickUpdateMetadataCmd,
 	)
@@ -313,11 +318,16 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errBox.Clear()
 	case previewTickMsg:
 		cmd := m.instanceChanged()
+		// Reduce polling frequency after initial fast updates
+		delay := 500 * time.Millisecond // Slower general polling rate
+		if msg.isInitial {
+			delay = 250 * time.Millisecond // A bit faster for the first few ticks
+		}
 		return m, tea.Batch(
 			cmd,
 			func() tea.Msg {
-				time.Sleep(100 * time.Millisecond)
-				return previewTickMsg{}
+				time.Sleep(delay)
+				return previewTickMsg{isInitial: false}
 			},
 		)
 	case keyupMsg:
@@ -328,15 +338,21 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !instance.Started() || instance.Paused() {
 				continue
 			}
-			updated, prompt := instance.HasUpdated()
+			// Capture content once, then use it for updates
+			// This relies on changes in Instance.HasUpdated to accept cached content
+			currentContent, err := instance.Preview() // This still happens, but HasUpdated will be cheaper
+			if err != nil {
+				log.WarningLog.Printf("could not get preview for metadata update %s: %v", instance.Title, err)
+				continue
+			}
+			updated, prompt := instance.HasUpdated(currentContent)
 			if updated {
 				instance.SetStatus(session.Running)
-			} else {
-				if prompt {
-					instance.TapEnter()
-				} else {
-					instance.SetStatus(session.Ready)
-				}
+			} else if !prompt { // If not updated and not a prompt, it's ready
+				instance.SetStatus(session.Ready)
+			}
+			if prompt && instance.AutoYes { // AutoYes logic for prompts
+				instance.TapEnter()
 			}
 			if err := instance.UpdateDiffStats(); err != nil {
 				log.WarningLog.Printf("could not update diff stats: %v", err)
@@ -817,7 +833,9 @@ func (m *home) keydownCallback(name keys.KeyName) tea.Cmd {
 type hideErrMsg struct{}
 
 // previewTickMsg implements tea.Msg and triggers a preview update
-type previewTickMsg struct{}
+type previewTickMsg struct{
+	isInitial bool // Flag to allow faster initial updates
+}
 
 type tickUpdateMetadataMessage struct{}
 

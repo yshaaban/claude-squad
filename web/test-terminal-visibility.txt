@@ -1,0 +1,38 @@
+TERMINAL VISIBILITY TEST INSTRUCTIONS
+
+This document contains instructions for testing the terminal visibility in the web UI.
+
+1. Start Claude Squad with web monitoring enabled:
+   ./cs -s --web
+
+2. Open your browser and navigate to:
+   http://localhost:8099/
+
+3. Open the browser developer console (F12 or right-click -> Inspect -> Console)
+
+4. Copy and paste the entire contents of the test-terminal-visibility.js file into the console and press Enter.
+
+5. The script will run a series of checks and report if the terminal is visible and has content.
+
+6. If the terminal is not visible (black box), the script will try to:
+   - Switch to fallback mode
+   - Verify if the fallback terminal is displaying content
+
+7. Check the console output for:
+   - SUCCESS messages: Terminal is working correctly
+   - WARNING messages: Potential issues that might need attention
+   - ERROR messages: Critical problems that need to be fixed
+
+TROUBLESHOOTING
+
+If the script reports errors:
+
+1. Try manually clicking the "Use Fallback" button to switch to plain text mode.
+
+2. Check the browser console for any JavaScript errors.
+
+3. Try a different browser to rule out browser-specific issues.
+
+4. Make sure the tmux session for the Claude instance is running correctly.
+
+5. Check the server logs for any WebSocket connection errors.

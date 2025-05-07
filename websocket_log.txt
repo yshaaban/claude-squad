@@ -1,0 +1,3 @@
+2025-05-06T12:36:26.703Z: Fetching instances from API...
+2025-05-06T12:36:26.722Z: API response: {"instances":[]}
+2025-05-06T12:36:26.722Z: ERROR: No instances found

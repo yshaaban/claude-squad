@@ -2,6 +2,7 @@ package session
 
 import (
 	"claude-squad/config"
+	"claude-squad/log"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -77,25 +78,54 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 func (s *Storage) LoadInstances() ([]*Instance, error) {
 	jsonData := s.state.GetInstances()
 
+	// Print detailed debug info when there's an issue
+	log.FileOnlyInfoLog.Printf("LoadInstances: got %d bytes of JSON data", len(jsonData))
+	
 	var instancesData []InstanceData
 	if err := json.Unmarshal(jsonData, &instancesData); err != nil {
+		log.FileOnlyInfoLog.Printf("LoadInstances: JSON unmarshal error: %v", err)
 		return nil, fmt.Errorf("failed to unmarshal instances: %w", err)
 	}
 
+	log.FileOnlyInfoLog.Printf("LoadInstances: Unmarshaled %d instances", len(instancesData))
+	
 	instances := make([]*Instance, len(instancesData))
 	for i, data := range instancesData {
+		log.FileOnlyInfoLog.Printf("LoadInstances: Loading instance %d: Title=%s Status=%v", 
+			i, data.Title, data.Status)
+		
 		instance, err := FromInstanceData(data)
 		if err != nil {
+			log.FileOnlyInfoLog.Printf("LoadInstances: Failed to create instance %s: %v", 
+				data.Title, err)
 			return nil, fmt.Errorf("failed to create instance %s: %w", data.Title, err)
 		}
+		
+		log.FileOnlyInfoLog.Printf("LoadInstances: Successfully loaded instance %s", data.Title)
 		instances[i] = instance
 	}
 
 	return instances, nil
 }
 
+// PreloadSimpleMode ensures that an empty instance list can be loaded even if storage is corrupt
+func (s *Storage) PreloadSimpleMode() {
+	// Check if we can load instances
+	_, err := s.LoadInstances()
+	if err != nil {
+		// If we can't load instances, save an empty list to reset the storage
+		log.FileOnlyInfoLog.Printf("Error loading instances, resetting storage: %v", err)
+		s.SaveInstances([]*Instance{})
+	}
+}
+
 // DeleteInstance removes an instance from storage
 func (s *Storage) DeleteInstance(title string) error {
+	// Try to grab raw JSON first to see if we can at least get that (for debugging)
+	jsonData := s.state.GetInstances()
+	log.FileOnlyInfoLog.Printf("DeleteInstance: Raw storage has %d bytes for instance '%s'", 
+		len(jsonData), title)
+	
 	instances, err := s.LoadInstances()
 	if err != nil {
 		return fmt.Errorf("failed to load instances: %w", err)

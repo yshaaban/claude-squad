@@ -45,6 +45,9 @@ func (s *Server) Handler() http.Handler {
 
 // NewServer creates a new monitoring server.
 func NewServer(storage *session.Storage, config *config.Config) *Server {
+	// Initialize special empty lists
+	storage.PreloadSimpleMode()
+
 	server := &Server{
 		storage:   storage,
 		config:    config,
@@ -65,12 +68,14 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 	router.Use(chimiddleware.Recoverer)
 	router.Use(chimiddleware.StripSlashes)
 	
-	// By default, localhost should always be allowed without authentication
-	// Override the config temporarily to ensure this works in testing
+	// Authentication Middleware
+	// Forcing auth to be disabled for all connections by using 'true ||'
+	// This is a development convenience that bypasses auth completely
 	if true || config.WebServerAllowLocalhost {
-		// No auth for localhost
-		log.InfoLog.Printf("Authentication disabled for localhost")
+		log.FileOnlyInfoLog.Printf("Authentication completely disabled for all connections")
 	} else {
+		// This branch is currently unreachable due to the 'true ||' above
+		// It's kept for future use if auth is needed
 		router.Use(webmiddleware.AuthMiddleware(config))
 	}
 	
@@ -101,10 +106,41 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 		r.Get("/status", server.handleServerStatus)
 	})
 	
-	// WebSocket route
-	router.Get("/ws/terminal/{name}", server.handleTerminalWebSocket)
+	// WebSocket route for terminal streaming.
+	// Use the TerminalMonitor-based handler for all WebSocket connections
+	webSocketHandler := handlers.WebSocketHandler(server.storage, server.terminalMonitor)
 	
-	// Note: Using enhanced websocket handler with additional logging
+	// Primary route pattern for new clients
+	router.Get("/ws/{name}", webSocketHandler)
+	
+	// Backward compatibility route for existing clients that use /ws/terminal/{name}
+	router.Get("/ws/terminal/{name}", webSocketHandler)
+	
+	// Compatibility route for clients that use query params: /ws?instance=...
+	router.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+		if instanceName := r.URL.Query().Get("instance"); instanceName != "" {
+			// Create chi context with URL params to pass to the handler
+			chiCtx := chi.NewRouteContext()
+			chiCtx.URLParams.Add("name", instanceName)
+			r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, chiCtx))
+			webSocketHandler(w, r)
+			return
+		}
+		
+		// If no instance name provided, return an error
+		log.FileOnlyWarningLog.Printf("WebSocket: /ws called without instance parameter from %s", r.RemoteAddr)
+		http.Error(w, "Instance name required via /ws/{name}, /ws/terminal/{name}, or /ws?instance=name", http.StatusBadRequest)
+	})
+
+	// Explicit redirect from the root to easy-terminal.html
+	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/easy-terminal.html", http.StatusFound)
+	})
+	
+	// Explicit redirect from /index.html to easy-terminal.html
+	router.Get("/index.html", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/easy-terminal.html", http.StatusFound)
+	})
 	
 	// Static files for web UI
 	router.Handle("/*", static.FileServer())
@@ -130,6 +166,18 @@ func NewServer(storage *session.Storage, config *config.Config) *Server {
 
 // Start begins the web server and background polling.
 func (s *Server) Start() error {
+	// Initialize detailed debug logging
+	InitDebugLog()
+	LogWebDebug("==== STARTING WEB SERVER ====")
+	
+	// Log instances at startup
+	instances, err := s.storage.LoadInstances()
+	if err != nil {
+		LogWebDebug("ERROR loading instances: %v", err)
+	} else {
+		LogWebInstances("STARTUP_INSTANCES", instances)
+	}
+	
 	// Start terminal monitor
 	s.terminalMonitor.Start()
 	
@@ -140,11 +188,11 @@ func (s *Server) Start() error {
 	go func() {
 		var err error
 		if s.config.WebServerUseTLS {
-			log.InfoLog.Printf("Starting HTTPS server on %s:%d", 
+			log.FileOnlyInfoLog.Printf("Starting HTTPS server on %s:%d",
 				s.config.WebServerHost, s.config.WebServerPort)
 			err = s.srv.ListenAndServeTLS("", "")  // Uses TLSConfig
 		} else {
-			log.InfoLog.Printf("Starting HTTP server on %s:%d", 
+			log.FileOnlyInfoLog.Printf("Starting HTTP server on %s:%d",
 				s.config.WebServerHost, s.config.WebServerPort)
 			err = s.srv.ListenAndServe()
 		}
@@ -159,9 +207,19 @@ func (s *Server) Start() error {
 
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() error {
+	LogWebDebug("==== STOPPING WEB SERVER ====")
 	close(s.done)
 	
+	// Log instance state before shutdown
+	instances, err := s.storage.LoadInstances()
+	if err != nil {
+		LogWebDebug("ERROR loading instances during shutdown: %v", err)
+	} else {
+		LogWebInstances("SHUTDOWN_INSTANCES", instances)
+	}
+	
 	// Stop terminal monitor
+	LogWebDebug("Stopping terminal monitor")
 	s.terminalMonitor.Stop()
 	
 	// Create shutdown context with timeout
@@ -169,7 +227,13 @@ func (s *Server) Stop() error {
 	defer cancel()
 	
 	// Gracefully shutdown HTTP server
-	return s.srv.Shutdown(ctx)
+	LogWebDebug("Shutting down HTTP server")
+	err = s.srv.Shutdown(ctx)
+	
+	// Close debug logging
+	CloseDebugLog()
+	
+	return err
 }
 
 // getInstanceByTitle retrieves an instance by title.
@@ -294,6 +358,5 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Pass terminal monitor interface to handler
-	handlers.WebSocketHandler(s.storage, s.terminalMonitor)(w, r)
+	// This function is effectively replaced by the logic in router.Get("/ws", ...)
 }
